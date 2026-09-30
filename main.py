@@ -1,17 +1,19 @@
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
 from database import get_session
-from models import User
+from models import SavedCV, User
 
 app = FastAPI()
 bearer = HTTPBearer(auto_error=False)
+MAX_CV_LENGTH = 50_000
 
 
 class SignupRequest(BaseModel):
@@ -34,6 +36,16 @@ class UserPublic(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class CVInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str
+
+
+class CVPublic(BaseModel):
+    text: str
 
 
 def normalized_email(email: EmailStr) -> str:
@@ -108,3 +120,41 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)) -> Tok
 @app.get("/me", response_model=UserPublic)
 def me(user: User = Depends(current_user)) -> User:
     return user
+
+
+@app.put("/cv", response_model=CVPublic)
+def save_cv(
+    payload: CVInput,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> CVPublic:
+    if not payload.text.strip():
+        raise HTTPException(status_code=422, detail="CV text must not be blank")
+    if len(payload.text) > MAX_CV_LENGTH:
+        raise HTTPException(status_code=422, detail=f"CV text exceeds {MAX_CV_LENGTH} characters")
+    statement = insert(SavedCV).values(user_id=user.id, text=payload.text)
+    statement = statement.on_conflict_do_update(
+        index_elements=[SavedCV.user_id],
+        set_={"text": payload.text},
+    )
+    session.execute(statement)
+    session.commit()
+    return CVPublic(text=payload.text)
+
+
+@app.get("/cv", response_model=CVPublic)
+def get_cv(user: User = Depends(current_user), session: Session = Depends(get_session)) -> SavedCV:
+    saved_cv = session.get(SavedCV, user.id)
+    if saved_cv is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    return saved_cv
+
+
+@app.delete("/cv", status_code=204)
+def delete_cv(user: User = Depends(current_user), session: Session = Depends(get_session)) -> Response:
+    saved_cv = session.get(SavedCV, user.id)
+    if saved_cv is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    session.delete(saved_cv)
+    session.commit()
+    return Response(status_code=204)

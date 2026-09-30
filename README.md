@@ -1,6 +1,6 @@
 # Job Comparer API
 
-A FastAPI backend with PostgreSQL accounts, a health check, and Alembic migrations.
+A FastAPI backend with PostgreSQL accounts, one saved plain-text CV per user, a health check, and Alembic migrations.
 
 ## Install
 
@@ -33,7 +33,7 @@ python -m alembic upgrade head
 python -m alembic -x database=test upgrade head
 ```
 
-Compose starts separate development and test PostgreSQL containers. Alembic creates the `users` table in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
+Compose starts separate development and test PostgreSQL containers. Alembic creates the `users` and `cvs` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
 
 ## Run the API
 
@@ -56,6 +56,26 @@ $token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/login -Conte
 Invoke-RestMethod -Uri http://127.0.0.1:8000/me -Headers @{ Authorization = "Bearer $token" }
 ```
 
+## Saved CV
+
+Each authenticated account can have one plain-text CV of up to 50,000 characters. Whitespace-only text and longer input return 422 with a clear error. The API derives ownership from the bearer token; there is no user ID in these routes.
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| `PUT` | `/cv` | Save or replace the current user's CV with JSON `{"text":"..."}`; returns the saved text. |
+| `GET` | `/cv` | Return the current user's CV, or 404 if none is saved. |
+| `DELETE` | `/cv` | Delete the current user's CV; returns 204, or 404 if none is saved. |
+
+All three routes return 401 without a valid bearer token. With `$token` from the login example above, try them in PowerShell:
+
+```powershell
+$headers = @{ Authorization = "Bearer $token" }
+$cvBody = @{ text = "Software engineer`nPython and PostgreSQL experience" } | ConvertTo-Json
+Invoke-RestMethod -Method Put -Uri http://127.0.0.1:8000/cv -Headers $headers -ContentType application/json -Body $cvBody
+Invoke-RestMethod -Uri http://127.0.0.1:8000/cv -Headers $headers
+Invoke-RestMethod -Method Delete -Uri http://127.0.0.1:8000/cv -Headers $headers
+```
+
 ## Run the tests
 
 With both databases running and `.env` configured:
@@ -65,4 +85,4 @@ python -m pytest
 python -m alembic -x database=test check
 ```
 
-Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
+Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account and CV tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
