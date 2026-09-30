@@ -6,3 +6,6 @@ SQLAlchemy
 psycopg[binary]
 alembic
 python-dotenv
+argon2-cffi
+PyJWT
+email-validator

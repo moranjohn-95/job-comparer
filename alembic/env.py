@@ -1,6 +1,7 @@
 from alembic import context
 
 from database import Base, get_database_url, get_engine
+import models  # noqa: F401 - registers models with Base.metadata
 
 target_metadata = Base.metadata
 

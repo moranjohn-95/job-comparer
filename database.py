@@ -1,9 +1,11 @@
 import os
+from functools import lru_cache
+from typing import Iterator
 
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.orm import DeclarativeBase, Session
 
 load_dotenv()
 
@@ -19,5 +21,11 @@ def get_database_url() -> str:
     return url
 
 
+@lru_cache
 def get_engine() -> Engine:
     return create_engine(get_database_url(), pool_pre_ping=True)
+
+
+def get_session() -> Iterator[Session]:
+    with Session(get_engine()) as session:
+        yield session
