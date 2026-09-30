@@ -1,6 +1,6 @@
 # Job Comparer API
 
-A FastAPI backend with PostgreSQL accounts, one saved plain-text CV per user, a health check, and Alembic migrations.
+A FastAPI backend with PostgreSQL accounts, one saved CV per user, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
 
 ## Install
 
@@ -65,6 +65,7 @@ Each authenticated account can have one plain-text CV of up to 50,000 characters
 | `PUT` | `/cv` | Save or replace the current user's CV with JSON `{"text":"..."}`; returns the saved text. |
 | `GET` | `/cv` | Return the current user's CV, or 404 if none is saved. |
 | `DELETE` | `/cv` | Delete the current user's CV; returns 204, or 404 if none is saved. |
+| `POST` | `/cv/upload` | Upload a PDF or DOCX as multipart field `file`, extract its text, and replace the current user's CV only if validation succeeds. |
 
 All three routes return 401 without a valid bearer token. With `$token` from the login example above, try them in PowerShell:
 
@@ -75,6 +76,14 @@ Invoke-RestMethod -Method Put -Uri http://127.0.0.1:8000/cv -Headers $headers -C
 Invoke-RestMethod -Uri http://127.0.0.1:8000/cv -Headers $headers
 Invoke-RestMethod -Method Delete -Uri http://127.0.0.1:8000/cv -Headers $headers
 ```
+
+To upload a local PDF or DOCX instead, use the token from the login example and replace the sample path:
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/cv/upload -H "Authorization: Bearer $token" -F "file=@C:\path\to\resume.pdf"
+```
+
+Uploads must be no larger than 5 MiB. The filename and file structure must match PDF or DOCX, and extracted text must meet the same 50,000-character limit as direct text entry. Unsupported formats or mismatched content return 415; files over the limit return 413. Damaged, encrypted, scanned or image-only, and text-empty documents return 422 with a specific error. A failed upload leaves the saved CV unchanged. The original upload is closed after processing and is not stored by the application. Image text is not processed with OCR.
 
 ## Run the tests
 

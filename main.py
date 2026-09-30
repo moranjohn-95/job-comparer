@@ -1,5 +1,5 @@
 import jwt
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 from sqlalchemy import select
@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
+from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
 from models import SavedCV, User
 
@@ -128,18 +129,40 @@ def save_cv(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> CVPublic:
-    if not payload.text.strip():
+    return persist_cv(user.id, payload.text, session)
+
+
+def persist_cv(user_id: int, cv_text: str, session: Session) -> CVPublic:
+    if not cv_text.strip():
         raise HTTPException(status_code=422, detail="CV text must not be blank")
-    if len(payload.text) > MAX_CV_LENGTH:
+    if len(cv_text) > MAX_CV_LENGTH:
         raise HTTPException(status_code=422, detail=f"CV text exceeds {MAX_CV_LENGTH} characters")
-    statement = insert(SavedCV).values(user_id=user.id, text=payload.text)
+    statement = insert(SavedCV).values(user_id=user_id, text=cv_text)
     statement = statement.on_conflict_do_update(
         index_elements=[SavedCV.user_id],
-        set_={"text": payload.text},
+        set_={"text": cv_text},
     )
     session.execute(statement)
     session.commit()
-    return CVPublic(text=payload.text)
+    return CVPublic(text=cv_text)
+
+
+@app.post("/cv/upload", response_model=CVPublic)
+def upload_cv(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> CVPublic:
+    try:
+        if file.size is not None and file.size > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 5 MiB upload limit")
+        data = file.file.read(MAX_UPLOAD_BYTES + 1)
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 5 MiB upload limit")
+        extracted_text = extract_cv_text(file.filename, data)
+        return persist_cv(user.id, extracted_text, session)
+    finally:
+        file.file.close()
 
 
 @app.get("/cv", response_model=CVPublic)
