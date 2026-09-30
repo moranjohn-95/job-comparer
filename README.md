@@ -12,7 +12,7 @@ py -m venv .venv
 python -m pip install -r requirements.txt
 ```
 
-## Set up the development database
+## Set up the databases
 
 Docker Desktop must be running. For a fresh setup, copy the example file:
 
@@ -20,18 +20,20 @@ Docker Desktop must be running. For a fresh setup, copy the example file:
 Copy-Item .env.example .env
 ```
 
-If `.env` already exists, keep it and add the new `AUTH_SECRET_KEY` setting. Edit `.env` before starting Docker:
+If `.env` already exists, keep it and add the `POSTGRES_TEST_*` and `TEST_DATABASE_URL` settings from `.env.example`. Edit `.env` before starting Docker:
 
 - Replace the placeholder in `POSTGRES_PASSWORD` and `DATABASE_URL` with the same local password. Letters and digits work without URL encoding.
+- Replace the placeholder in `POSTGRES_TEST_PASSWORD` and `TEST_DATABASE_URL` with a second local password. The test URL must name `POSTGRES_TEST_DB`, which must differ from `POSTGRES_DB`.
 - Replace `AUTH_SECRET_KEY` with a random secret of at least 32 characters. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"` and paste the output into `.env`. Keep it private.
-- Keep `POSTGRES_DB` and the database name in `DATABASE_URL` in sync. If port 5432 is occupied, change `POSTGRES_PORT` and the port in `DATABASE_URL` together.
+- Keep `POSTGRES_DB` and the database name in `DATABASE_URL` in sync. If port 5432 or 5433 is occupied, change the matching `POSTGRES_PORT` or `POSTGRES_TEST_PORT` and URL port together.
 
 ```powershell
 docker compose up -d --wait
 python -m alembic upgrade head
+python -m alembic -x database=test upgrade head
 ```
 
-Alembic creates the `users` table. Docker stores PostgreSQL data in the `postgres_data` named volume. To stop the database without deleting its data, run `docker compose down`.
+Compose starts separate development and test PostgreSQL containers. Alembic creates the `users` table in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
 
 ## Run the API
 
@@ -54,12 +56,13 @@ $token = (Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/login -Conte
 Invoke-RestMethod -Uri http://127.0.0.1:8000/me -Headers @{ Authorization = "Bearer $token" }
 ```
 
-## Run the test
+## Run the tests
 
-With the development database running and `.env` configured:
+With both databases running and `.env` configured:
 
 ```powershell
 python -m pytest
+python -m alembic -x database=test check
 ```
 
-The tests use the development PostgreSQL database. The account tests create unique users and remove them afterward; the database test runs `SELECT 1` and confirms the connection is to `POSTGRES_DB`.
+Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
