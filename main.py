@@ -1,7 +1,9 @@
 import jwt
+from urllib.parse import urlsplit
+
 from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
@@ -10,11 +12,15 @@ from sqlalchemy.orm import Session
 from auth import create_access_token, decode_access_token, hash_password, verify_password
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
-from models import SavedCV, User
+from models import SavedCV, SavedJob, User
 
 app = FastAPI()
 bearer = HTTPBearer(auto_error=False)
 MAX_CV_LENGTH = 50_000
+MAX_JOB_TITLE_LENGTH = 200
+MAX_JOB_COMPANY_LENGTH = 200
+MAX_JOB_DESCRIPTION_LENGTH = 20_000
+MAX_JOB_URL_LENGTH = 2_048
 
 
 class SignupRequest(BaseModel):
@@ -47,6 +53,58 @@ class CVInput(BaseModel):
 
 class CVPublic(BaseModel):
     text: str
+
+
+class JobInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(max_length=MAX_JOB_TITLE_LENGTH)
+    company_name: str = Field(max_length=MAX_JOB_COMPANY_LENGTH)
+    description: str = Field(max_length=MAX_JOB_DESCRIPTION_LENGTH)
+    source_url: str | None = Field(default=None, max_length=MAX_JOB_URL_LENGTH)
+
+    @field_validator("title", "company_name")
+    @classmethod
+    def strip_required_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("description")
+    @classmethod
+    def check_description(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("source_url")
+    @classmethod
+    def check_source_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value or any(character.isspace() or ord(character) < 32 for character in value):
+            raise ValueError("must be an absolute http or https URL")
+        try:
+            parsed = urlsplit(value)
+            hostname = parsed.hostname
+            port = parsed.port
+        except ValueError:
+            raise ValueError("must be an absolute http or https URL") from None
+        if parsed.scheme not in {"http", "https"} or not hostname or port == 0:
+            raise ValueError("must be an absolute http or https URL")
+        return value
+
+
+class JobPublic(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    company_name: str
+    description: str
+    source_url: str | None
 
 
 def normalized_email(email: EmailStr) -> str:
@@ -179,5 +237,43 @@ def delete_cv(user: User = Depends(current_user), session: Session = Depends(get
     if saved_cv is None:
         raise HTTPException(status_code=404, detail="CV not found")
     session.delete(saved_cv)
+    session.commit()
+    return Response(status_code=204)
+
+
+def get_owned_job(session: Session, user_id: int, job_id: int) -> SavedJob:
+    job = session.scalar(select(SavedJob).where(SavedJob.id == job_id, SavedJob.user_id == user_id))
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/jobs", response_model=JobPublic, status_code=201)
+def create_job(
+    payload: JobInput,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> SavedJob:
+    job = SavedJob(user_id=user.id, **payload.model_dump())
+    session.add(job)
+    session.commit()
+    session.refresh(job)
+    return job
+
+
+@app.get("/jobs", response_model=list[JobPublic])
+def list_jobs(user: User = Depends(current_user), session: Session = Depends(get_session)) -> list[SavedJob]:
+    return list(session.scalars(select(SavedJob).where(SavedJob.user_id == user.id).order_by(SavedJob.id.desc())))
+
+
+@app.get("/jobs/{job_id}", response_model=JobPublic)
+def view_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)) -> SavedJob:
+    return get_owned_job(session, user.id, job_id)
+
+
+@app.delete("/jobs/{job_id}", status_code=204)
+def delete_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)) -> Response:
+    job = get_owned_job(session, user.id, job_id)
+    session.delete(job)
     session.commit()
     return Response(status_code=204)

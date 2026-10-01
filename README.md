@@ -1,6 +1,6 @@
 # Job Comparer API
 
-A FastAPI backend with PostgreSQL accounts, one saved CV per user, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
+A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
 
 ## Install
 
@@ -33,7 +33,7 @@ python -m alembic upgrade head
 python -m alembic -x database=test upgrade head
 ```
 
-Compose starts separate development and test PostgreSQL containers. Alembic creates the `users` and `cvs` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
+Compose starts separate development and test PostgreSQL containers. Alembic creates the `users`, `cvs`, and `jobs` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
 
 ## Run the API
 
@@ -67,7 +67,7 @@ Each authenticated account can have one plain-text CV of up to 50,000 characters
 | `DELETE` | `/cv` | Delete the current user's CV; returns 204, or 404 if none is saved. |
 | `POST` | `/cv/upload` | Upload a PDF or DOCX as multipart field `file`, extract its text, and replace the current user's CV only if validation succeeds. |
 
-All three routes return 401 without a valid bearer token. With `$token` from the login example above, try them in PowerShell:
+All CV routes return 401 without a valid bearer token. With `$token` from the login example above, try them in PowerShell:
 
 ```powershell
 $headers = @{ Authorization = "Bearer $token" }
@@ -85,6 +85,28 @@ curl.exe -X POST http://127.0.0.1:8000/cv/upload -H "Authorization: Bearer $toke
 
 Uploads must be no larger than 5 MiB. The filename and file structure must match PDF or DOCX, and extracted text must meet the same 50,000-character limit as direct text entry. Unsupported formats or mismatched content return 415; files over the limit return 413. Damaged, encrypted, scanned or image-only, and text-empty documents return 422 with a specific error. A failed upload leaves the saved CV unchanged. The original upload is closed after processing and is not stored by the application. Image text is not processed with OCR.
 
+## Saved jobs
+
+Jobs belong to the authenticated user. A job needs a title (up to 200 characters), company name (up to 200), and pasted description (up to 20,000). An optional source URL can be up to 2,048 characters and must be an absolute `http` or `https` URL. The server stores the URL as supplied after trimming outer whitespace; it does not visit or fetch it. Blank required fields, invalid URLs, and overlong values return 422.
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| `POST` | `/jobs` | Create a job; returns 201 and the saved job. |
+| `GET` | `/jobs` | List the current user's jobs, newest first. |
+| `GET` | `/jobs/{job_id}` | View one owned job; returns 404 if missing or owned by someone else. |
+| `DELETE` | `/jobs/{job_id}` | Delete one owned job; returns 204, or 404 if missing or owned by someone else. |
+
+All job routes require a bearer token and return 401 without one. With `$token` from the login example:
+
+```powershell
+$headers = @{ Authorization = "Bearer $token" }
+$jobBody = @{ title = 'Backend Engineer'; company_name = 'Example Co'; description = 'Build Python APIs'; source_url = 'https://example.com/jobs/123' } | ConvertTo-Json
+$job = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/jobs -Headers $headers -ContentType application/json -Body $jobBody
+Invoke-RestMethod -Uri http://127.0.0.1:8000/jobs -Headers $headers
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -Headers $headers
+Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -Headers $headers
+```
+
 ## Run the tests
 
 With both databases running and `.env` configured:
@@ -94,4 +116,4 @@ python -m pytest
 python -m alembic -x database=test check
 ```
 
-Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account and CV tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
+Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account, CV, and job tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
