@@ -44,6 +44,44 @@ python -m uvicorn main:app --reload
 
 Open <http://127.0.0.1:8000/health> to see `{"status":"ok"}`.
 
+## Run the frontend locally
+
+Use Node.js 22.12 or newer. In one PowerShell terminal at the repository root,
+run the API on the existing local port:
+
+```powershell
+.venv\Scripts\Activate.ps1
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+```
+
+In a second PowerShell terminal:
+
+```powershell
+Set-Location frontend
+npm ci
+npm run dev
+```
+
+Open <http://127.0.0.1:5173>. The initial React app only shows the Job
+Comparer shell and checks `GET http://127.0.0.1:8000/health`. The API allows
+cross-origin `GET` requests from exactly `http://127.0.0.1:5173` for local
+development. If the API is stopped, the status shows unavailable with a retry
+button. This frontend has no account, CV, job, or AI controls. The OpenAI key
+stays in the backend `.env` and is not used by the frontend.
+
+Run frontend checks from `frontend/`:
+
+```powershell
+npm run lint
+npm run build
+npm test
+```
+
+GitHub Actions runs the same frontend checks on pushes and pull requests.
+
+The frontend currently points to the local API address directly; a deployed
+frontend would need its own API address and matching restricted CORS origin.
+
 ## Accounts
 
 `POST /signup` accepts JSON with `email` and `password` (12 to 128 characters) and returns the user ID and normalized email. `POST /login` accepts the same fields and returns a bearer token valid for one hour. Send that token as `Authorization: Bearer <token>` to `GET /me` to retrieve the current user's ID and email. Invalid input returns 422, duplicate email returns 409, and invalid login or authentication returns 401. Passwords are stored as Argon2 hashes and are never included in API responses.
@@ -172,8 +210,9 @@ files, including tests and Alembic migrations:
 
 ```powershell
 python -m pip install flake8==7.4.1
-python -m flake8 . --exclude .venv --jobs 1
+python -m flake8 . --exclude .venv,node_modules --jobs 1
 ```
 
 The check uses Flake8's default 79-character line limit. GitHub Actions runs
-the same command on pushes and pull requests. The `.venv` directory is excluded.
+the same command on pushes and pull requests. Dependency directories are
+excluded.

@@ -13,6 +13,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import select
@@ -43,6 +44,11 @@ from database import get_session
 from models import ComparisonHistory, SavedCV, SavedJob, User
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://127.0.0.1:5173"],
+    allow_methods=["GET"],
+)
 bearer = HTTPBearer(auto_error=False)
 MAX_CV_LENGTH = 50_000
 MAX_JOB_TITLE_LENGTH = 200

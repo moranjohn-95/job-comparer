@@ -1,0 +1,152 @@
+#root {
+  min-height: 100vh;
+}
+
+.app-shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.site-header,
+.site-footer {
+  width: min(100%, 1120px);
+  margin-inline: auto;
+}
+
+.site-header {
+  padding: 24px 32px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.brand-icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: #176d76;
+  color: white;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.api-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid #d7e1e4;
+  border-radius: 999px;
+  background: white;
+  color: #4c6571;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b9c4c9;
+}
+
+.api-status--connected .status-dot {
+  background: #279b72;
+}
+
+.api-status--unavailable .status-dot {
+  background: #d26b4f;
+}
+
+.main-content {
+  width: min(calc(100% - 48px), 760px);
+  margin: auto;
+  padding: 72px 0;
+}
+
+.eyebrow {
+  margin: 0 0 16px;
+  color: #176d76;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  color: #153345;
+  font-size: clamp(2.6rem, 7vw, 5rem);
+  letter-spacing: -0.06em;
+  line-height: 1.05;
+}
+
+.intro {
+  max-width: 580px;
+  margin: 24px 0 0;
+  color: #526b77;
+  font-size: clamp(1rem, 2.5vw, 1.2rem);
+  line-height: 1.6;
+}
+
+.connection-help {
+  margin-top: 32px;
+  padding: 20px 24px;
+  border: 1px solid #d7e1e4;
+  border-radius: 14px;
+  background: white;
+}
+
+.connection-help p {
+  margin: 0 0 14px;
+}
+
+.connection-help button {
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: #176d76;
+  color: white;
+  cursor: pointer;
+}
+
+.connection-help button:focus-visible {
+  outline: 3px solid #176d76;
+  outline-offset: 3px;
+}
+
+.site-footer {
+  padding: 24px 32px;
+  color: #71858d;
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .site-header {
+    padding: 18px 20px;
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .main-content {
+    width: min(calc(100% - 40px), 760px);
+    padding: 56px 0;
+  }
+
+  .site-footer {
+    padding: 20px;
+  }
+}
