@@ -1,6 +1,6 @@
 # Job Comparer API
 
-A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
+A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, a one-off AI comparison endpoint, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
 
 ## Install
 
@@ -25,6 +25,7 @@ If `.env` already exists, keep it and add the `POSTGRES_TEST_*` and `TEST_DATABA
 - Replace the placeholder in `POSTGRES_PASSWORD` and `DATABASE_URL` with the same local password. Letters and digits work without URL encoding.
 - Replace the placeholder in `POSTGRES_TEST_PASSWORD` and `TEST_DATABASE_URL` with a second local password. The test URL must name `POSTGRES_TEST_DB`, which must differ from `POSTGRES_DB`.
 - Replace `AUTH_SECRET_KEY` with a random secret of at least 32 characters. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"` and paste the output into `.env`. Keep it private.
+- To use the comparison endpoint, set `OPENAI_API_KEY` to your private provider key and `OPENAI_MODEL` to a model that supports Responses API structured outputs. The example uses `gpt-4o-mini`. The comparison endpoint returns 503 until a real key is configured. Tests use mocked responses and do not need a provider key.
 - Keep `POSTGRES_DB` and the database name in `DATABASE_URL` in sync. If port 5432 or 5433 is occupied, change the matching `POSTGRES_PORT` or `POSTGRES_TEST_PORT` and URL port together.
 
 ```powershell
@@ -106,6 +107,32 @@ Invoke-RestMethod -Uri http://127.0.0.1:8000/jobs -Headers $headers
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -Headers $headers
 Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -Headers $headers
 ```
+
+## Compare a saved CV with an owned job
+
+`POST /jobs/{job_id}/compare` requires a bearer token, an owned saved job, and a saved CV. It sends the saved CV text and that job's description to the configured OpenAI model for a one-off comparison. The result has `matched_requirements` with short excerpts from both texts, and `possible_gaps` with a job excerpt and the status `not_found_in_cv`. A possible gap only means the saved CV does not show evidence of a requirement; it does not establish that the user lacks the skill. The endpoint gives no suitability score or hiring prediction. It does not store comparison results.
+
+With `$token` and `$job` from the examples above, and a saved CV:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/jobs/$($job.id)/compare" -Headers @{ Authorization = "Bearer $token" }
+```
+
+Example response shape (the actual requirements and excerpts depend on the saved texts):
+
+```json
+{
+  "matched_requirements": [
+    {"requirement": "Python APIs", "job_evidence": "Build Python APIs", "cv_evidence": "Built Python APIs"}
+  ],
+  "possible_gaps": [
+    {"requirement": "Kubernetes", "job_evidence": "Deploy services with Kubernetes", "status": "not_found_in_cv"}
+  ],
+  "interpretation": "A possible gap means evidence was not found in the saved CV; it does not establish that the person lacks the skill."
+}
+```
+
+Missing or unowned jobs return 404 without contacting the provider; a missing CV also returns 404. Missing provider configuration returns 503. Provider failures or invalid output return a generic 502 without including CV text or provider error details. No comparison result is saved on failure or success. A comparison uses provider tokens and may incur a charge on each request. The request sets `store: false` to disable response storage, but the provider's default abuse monitoring logs may still retain request content for up to 30 days; review [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data?article_id=8510) before sending sensitive CV data. Results are AI generated and should be checked against the source texts; excerpt checks cannot prove the model's interpretation is correct.
 
 ## Run the tests
 

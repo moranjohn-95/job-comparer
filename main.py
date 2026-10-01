@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
+from comparison import ComparisonResult, InvalidProviderOutput, ProviderConfigurationError, ProviderFailure, compare
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
 from models import SavedCV, SavedJob, User
@@ -269,6 +270,26 @@ def list_jobs(user: User = Depends(current_user), session: Session = Depends(get
 @app.get("/jobs/{job_id}", response_model=JobPublic)
 def view_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)) -> SavedJob:
     return get_owned_job(session, user.id, job_id)
+
+
+@app.post("/jobs/{job_id}/compare", response_model=ComparisonResult)
+def compare_job(
+    job_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ComparisonResult:
+    job = get_owned_job(session, user.id, job_id)
+    saved_cv = session.get(SavedCV, user.id)
+    if saved_cv is None:
+        raise HTTPException(status_code=404, detail="CV not found")
+    try:
+        return compare(saved_cv.text, job.description)
+    except ProviderConfigurationError:
+        raise HTTPException(status_code=503, detail="AI provider is not configured") from None
+    except ProviderFailure:
+        raise HTTPException(status_code=502, detail="AI provider is unavailable") from None
+    except InvalidProviderOutput:
+        raise HTTPException(status_code=502, detail="AI provider returned an invalid comparison") from None
 
 
 @app.delete("/jobs/{job_id}", status_code=204)
