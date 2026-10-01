@@ -25,7 +25,7 @@ If `.env` already exists, keep it and add the `POSTGRES_TEST_*` and `TEST_DATABA
 - Replace the placeholder in `POSTGRES_PASSWORD` and `DATABASE_URL` with the same local password. Letters and digits work without URL encoding.
 - Replace the placeholder in `POSTGRES_TEST_PASSWORD` and `TEST_DATABASE_URL` with a second local password. The test URL must name `POSTGRES_TEST_DB`, which must differ from `POSTGRES_DB`.
 - Replace `AUTH_SECRET_KEY` with a random secret of at least 32 characters. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"` and paste the output into `.env`. Keep it private.
-- To use the comparison endpoint, set `OPENAI_API_KEY` to your private provider key and `OPENAI_MODEL` to a model that supports Responses API structured outputs. The example uses `gpt-4o-mini`. The comparison endpoint returns 503 until a real key is configured. Tests use mocked responses and do not need a provider key.
+- AI comparisons are disabled by default. To enable them, set `AI_COMPARISON_ENABLED=true`, set `OPENAI_API_KEY` to your private provider key, and keep `OPENAI_MODEL=gpt-4o-mini`. The server rejects other model names. Keep the key on the server and out of client requests. Tests use mocked responses and do not need a provider key.
 - Keep `POSTGRES_DB` and the database name in `DATABASE_URL` in sync. If port 5432 or 5433 is occupied, change the matching `POSTGRES_PORT` or `POSTGRES_TEST_PORT` and URL port together.
 
 ```powershell
@@ -34,7 +34,7 @@ python -m alembic upgrade head
 python -m alembic -x database=test upgrade head
 ```
 
-Compose starts separate development and test PostgreSQL containers. Alembic creates the `users`, `cvs`, and `jobs` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
+Compose starts separate development and test PostgreSQL containers. Alembic creates the `users`, `cvs`, `jobs`, and `ai_usage_counters` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
 
 ## Run the API
 
@@ -110,7 +110,7 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -H
 
 ## Compare a saved CV with an owned job
 
-`POST /jobs/{job_id}/compare` requires a bearer token, an owned saved job, and a saved CV. It sends the saved CV text and that job's description to the configured OpenAI model for a one-off comparison. The result has `matched_requirements` with short excerpts from both texts, and `possible_gaps` with a job excerpt and the status `not_found_in_cv`. A possible gap only means the saved CV does not show evidence of a requirement; it does not establish that the user lacks the skill. The endpoint gives no suitability score or hiring prediction. It does not store comparison results.
+`POST /jobs/{job_id}/compare` requires a bearer token, an owned saved job, and a saved CV. When enabled, it sends the saved CV text and that job's description to the configured OpenAI model for a one-off comparison. The result has `matched_requirements` with short excerpts from both texts, and `possible_gaps` with a job excerpt and the status `not_found_in_cv`. A possible gap only means the saved CV does not show evidence of a requirement; it does not establish that the user lacks the skill. The endpoint gives no suitability score or hiring prediction. It does not store comparison results.
 
 With `$token` and `$job` from the examples above, and a saved CV:
 
@@ -132,7 +132,11 @@ Example response shape (the actual requirements and excerpts depend on the saved
 }
 ```
 
-Missing or unowned jobs return 404 without contacting the provider; a missing CV also returns 404. Missing provider configuration returns 503. Provider failures or invalid output return a generic 502 without including CV text or provider error details. No comparison result is saved on failure or success. A comparison uses provider tokens and may incur a charge on each request. The request sets `store: false` to disable response storage, but the provider's default abuse monitoring logs may still retain request content for up to 30 days; review [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data?article_id=8510) before sending sensitive CV data. Results are AI generated and should be checked against the source texts; excerpt checks cannot prove the model's interpretation is correct.
+Missing or unowned jobs return 404 without contacting the provider; a missing CV also returns 404. Disabled mode or invalid provider configuration returns 503. A saved CV over 12,000 characters or 16,000 UTF-8 bytes, or a job description over 8,000 characters or 12,000 UTF-8 bytes, returns 422 before any provider call. The serialized CV and job text together must also fit within 32,000 UTF-8 bytes. The complete saved text must fit these limits; it is not silently truncated.
+
+Each account can make at most 3 comparison attempts per UTC day. Across all accounts sharing the same PostgreSQL database, the app allows at most 10 attempts per UTC day and 50 per UTC calendar month. A reached limit returns 429 with the specific account, daily app, or monthly app limit. PostgreSQL locks a shared counter row and commits the reservation before the provider call, so simultaneous requests and extra accounts cannot exceed the app limits. Provider failures and timeouts still count because the provider may have processed and charged for the request. Counters are not reset when an account is deleted. There are no automatic provider retries. Each request uses only `gpt-4o-mini` and caps output at 1,200 tokens.
+
+Provider failures or invalid output return a generic 502 without including CV text, the API key, or provider error details. No comparison result is saved on failure or success. A comparison uses provider tokens and may incur a charge on each request. These controls limit this endpoint's attempts, not currency spent: token prices and input tokenization vary, a timed-out call may still be charged, and use of the same API key outside this app is not counted. Separate app installations with separate databases have separate limits. The request sets `store: false` to disable response storage, but the provider's default abuse monitoring logs may still retain request content for up to 30 days; review [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data?article_id=8510) before sending sensitive CV data. Results are AI generated and should be checked against the source texts; excerpt checks cannot prove the model's interpretation is correct.
 
 ## Run the tests
 

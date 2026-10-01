@@ -23,12 +23,17 @@ from auth import (
     hash_password,
     verify_password,
 )
+from ai_usage import UsageLimitReached, reserve_attempt
 from comparison import (
+    ComparisonDisabled,
+    ComparisonInputTooLong,
     ComparisonResult,
     InvalidProviderOutput,
     ProviderConfigurationError,
     ProviderFailure,
+    check_input_limits,
     compare,
+    get_provider_settings,
 )
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
@@ -347,11 +352,26 @@ def compare_job(
     if saved_cv is None:
         raise HTTPException(status_code=404, detail="CV not found")
     try:
-        return compare(saved_cv.text, job.description)
+        settings = get_provider_settings()
+        check_input_limits(saved_cv.text, job.description)
+    except ComparisonDisabled:
+        raise HTTPException(
+            status_code=503, detail="AI comparisons are disabled"
+        ) from None
     except ProviderConfigurationError:
         raise HTTPException(
             status_code=503, detail="AI provider is not configured"
         ) from None
+    except ComparisonInputTooLong as error:
+        raise HTTPException(status_code=422, detail=str(error)) from None
+
+    try:
+        reserve_attempt(session, user.id)
+    except UsageLimitReached as error:
+        raise HTTPException(status_code=429, detail=str(error)) from None
+
+    try:
+        return compare(saved_cv.text, job.description, settings)
     except ProviderFailure:
         raise HTTPException(
             status_code=502, detail="AI provider is unavailable"

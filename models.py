@@ -1,4 +1,12 @@
-from sqlalchemy import ForeignKey, Index, String, Text, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -34,3 +42,13 @@ class SavedJob(Base):
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     source_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+
+class AIUsageCounter(Base):
+    __tablename__ = "ai_usage_counters"
+    __table_args__ = (
+        CheckConstraint("call_count >= 0", name="ck_ai_usage_nonnegative"),
+    )
+
+    counter_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False)

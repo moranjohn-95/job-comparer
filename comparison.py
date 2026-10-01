@@ -2,7 +2,7 @@
 
 import json
 import os
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import httpx
 from pydantic import (
@@ -18,12 +18,66 @@ class ProviderConfigurationError(Exception):
     pass
 
 
+class ComparisonDisabled(Exception):
+    pass
+
+
+class ComparisonInputTooLong(Exception):
+    pass
+
+
 class ProviderFailure(Exception):
     pass
 
 
 class InvalidProviderOutput(Exception):
     pass
+
+
+class ProviderSettings(NamedTuple):
+    key: str
+    model: str
+
+
+ALLOWED_MODELS = frozenset({"gpt-4o-mini"})
+MAX_CV_CHARS = 12_000
+MAX_CV_BYTES = 16_000
+MAX_JOB_CHARS = 8_000
+MAX_JOB_BYTES = 12_000
+MAX_USER_CONTENT_BYTES = 32_000
+MAX_OUTPUT_TOKENS = 1_200
+
+
+def get_provider_settings() -> ProviderSettings:
+    if os.getenv("AI_COMPARISON_ENABLED", "").lower() != "true":
+        raise ComparisonDisabled
+    key = os.getenv("OPENAI_API_KEY", "").strip()
+    model = os.getenv("OPENAI_MODEL", "").strip()
+    if not key or key.startswith("replace-") or model not in ALLOWED_MODELS:
+        raise ProviderConfigurationError
+    return ProviderSettings(key=key, model=model)
+
+
+def check_input_limits(cv_text: str, job_description: str) -> None:
+    if len(cv_text) > MAX_CV_CHARS or len(cv_text.encode()) > MAX_CV_BYTES:
+        raise ComparisonInputTooLong(
+            "Saved CV exceeds the AI comparison input limit"
+        )
+    if (
+        len(job_description) > MAX_JOB_CHARS
+        or len(job_description.encode()) > MAX_JOB_BYTES
+    ):
+        raise ComparisonInputTooLong(
+            "Saved job description exceeds the AI comparison input limit"
+        )
+    content = json.dumps(
+        {"cv_text": cv_text, "job_description": job_description},
+        ensure_ascii=False,
+    )
+    if len(content.encode()) > MAX_USER_CONTENT_BYTES:
+        raise ComparisonInputTooLong(
+            "Combined CV and job text exceeds the AI comparison input limit"
+        )
 
 
 class MatchedRequirement(BaseModel):
@@ -115,23 +169,31 @@ SYSTEM_INSTRUCTIONS = (
 )
 
 
-def _provider_response(cv_text: str, job_description: str) -> dict:
-    key = os.getenv("OPENAI_API_KEY", "").strip()
-    model = os.getenv("OPENAI_MODEL", "").strip()
-    if not key or key.startswith("replace-") or not model:
-        raise ProviderConfigurationError
+def _post_once(
+    url: str, *, headers: dict[str, str], json: dict, timeout: float
+) -> httpx.Response:
+    with httpx.Client(
+        transport=httpx.HTTPTransport(retries=0), timeout=timeout
+    ) as client:
+        return client.post(url, headers=headers, json=json)
 
+
+def _provider_response(
+    cv_text: str, job_description: str, settings: ProviderSettings
+) -> dict:
+    content = json.dumps(
+        {"cv_text": cv_text, "job_description": job_description},
+        ensure_ascii=False,
+    )
     payload = {
-        "model": model,
+        "model": settings.model,
         "store": False,
-        "max_output_tokens": 1800,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
         "input": [
             {"role": "system", "content": SYSTEM_INSTRUCTIONS},
             {
                 "role": "user",
-                "content": json.dumps(
-                    {"cv_text": cv_text, "job_description": job_description}
-                ),
+                "content": content,
             },
         ],
         "text": {
@@ -144,9 +206,9 @@ def _provider_response(cv_text: str, job_description: str) -> dict:
         },
     }
     try:
-        response = httpx.post(
+        response = _post_once(
             "https://api.openai.com/v1/responses",
-            headers={"Authorization": f"Bearer {key}"},
+            headers={"Authorization": f"Bearer {settings.key}"},
             json=payload,
             timeout=30.0,
         )
@@ -184,8 +246,10 @@ def _is_excerpt(excerpt: str, source: str) -> bool:
     return bool(normalized_excerpt) and normalized_excerpt in normalized_source
 
 
-def compare(cv_text: str, job_description: str) -> ComparisonResult:
-    data = _provider_response(cv_text, job_description)
+def compare(
+    cv_text: str, job_description: str, settings: ProviderSettings
+) -> ComparisonResult:
+    data = _provider_response(cv_text, job_description, settings)
     if set(data) != {"matched_requirements", "possible_gaps"}:
         raise InvalidProviderOutput
     try:
