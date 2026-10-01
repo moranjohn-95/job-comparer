@@ -1,6 +1,7 @@
 import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from uuid import uuid4
 
 import httpx
@@ -20,7 +21,7 @@ from comparison import (
     MAX_OUTPUT_TOKENS,
     _post_once,
 )
-from models import AIUsageCounter, User
+from models import AIUsageCounter, ComparisonHistory, SavedCV, User
 
 PASSWORD = "correct-horse-battery-123"
 CV_TEXT = "Built Python APIs and maintained PostgreSQL databases."
@@ -573,6 +574,11 @@ def test_account_daily_limit_counts_attempts(
         "detail": "Daily account comparison limit reached (3)"
     }
     assert len(calls) == 3
+    assert len(
+        client.get(
+            f"/jobs/{job_id}/comparisons", headers=headers
+        ).json()
+    ) == 3
 
 
 def test_app_daily_limit_applies_across_accounts(
@@ -715,3 +721,219 @@ def test_http_transport_explicitly_disables_retries(
     assert result == "sent once"
     assert seen[0] == 0
     assert len(seen) == 6
+
+
+def test_successful_result_persists_as_private_history(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    calls = mock_success(monkeypatch)
+
+    comparison = client.post(f"/jobs/{job_id}/compare", headers=headers)
+
+    assert comparison.status_code == 200
+    with TestClient(app) as fresh_client:
+        history = fresh_client.get(
+            f"/jobs/{job_id}/comparisons", headers=headers
+        )
+    assert history.status_code == 200
+    assert len(history.json()) == 1
+    saved = history.json()[0]
+    assert saved["job_id"] == job_id
+    assert saved["cv_outdated"] is False
+    assert saved["result"] == comparison.json()
+    assert datetime.fromisoformat(saved["created_at"]).tzinfo is not None
+    assert len(calls) == 1
+    assert client.get(
+        f"/jobs/{job_id}/comparisons/{saved['id']}", headers=headers
+    ).json() == saved
+    with Session(get_engine()) as session:
+        entry = session.get(ComparisonHistory, saved["id"])
+        assert entry is not None
+        assert entry.job_id == job_id
+        assert entry.cv_revision == session.get(
+            SavedCV, entry.user_id
+        ).revision
+        assert "cv_text" not in entry.result
+        assert "job_description" not in entry.result
+        assert CV_TEXT not in str(entry.result)
+        assert JOB_DESCRIPTION not in str(entry.result)
+
+
+def test_history_list_and_view_enforce_job_and_comparison_ownership(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner = create_user()
+    other = create_user()
+    owned_job = prepare(client, owner)
+    another_owned_job = prepare(client, owner)
+    other_job = prepare(client, other)
+    calls = mock_success(monkeypatch)
+    assert client.post(
+        f"/jobs/{owned_job}/compare", headers=owner
+    ).status_code == 200
+    history_id = client.get(
+        f"/jobs/{owned_job}/comparisons", headers=owner
+    ).json()[0]["id"]
+
+    assert client.get(
+        f"/jobs/{owned_job}/comparisons", headers=other
+    ).status_code == 404
+    assert client.get(
+        f"/jobs/{owned_job}/comparisons/{history_id}",
+        headers=other,
+    ).status_code == 404
+    assert client.get(
+        f"/jobs/{other_job}/comparisons", headers=owner
+    ).status_code == 404
+    assert client.get(
+        f"/jobs/{another_owned_job}/comparisons/{history_id}",
+        headers=owner,
+    ).status_code == 404
+    assert client.get(f"/jobs/{owned_job}/comparisons").status_code == 401
+    assert client.get(
+        f"/jobs/{owned_job}/comparisons/{history_id}"
+    ).status_code == 401
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("failure", ["provider", "invalid"])
+def test_failed_comparison_creates_no_history(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    if failure == "provider":
+        def fake_post(*_: object, **__: object) -> None:
+            raise httpx.ConnectError("provider unavailable")
+    else:
+        def fake_post(*_: object, **__: object) -> httpx.Response:
+            return provider_response({"matched_requirements": []})
+    monkeypatch.setattr("comparison._post_once", fake_post)
+
+    response = client.post(f"/jobs/{job_id}/compare", headers=headers)
+
+    assert response.status_code == 502
+    assert client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers
+    ).json() == []
+    with Session(get_engine()) as session:
+        assert session.query(ComparisonHistory).count() == 0
+
+
+def test_history_marks_replaced_or_deleted_cv_as_outdated(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    mock_success(monkeypatch)
+    assert client.post(
+        f"/jobs/{job_id}/compare", headers=headers
+    ).status_code == 200
+    history_id = client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers
+    ).json()[0]["id"]
+    path = f"/jobs/{job_id}/comparisons/{history_id}"
+    assert client.get(path, headers=headers).json()["cv_outdated"] is False
+
+    assert client.put(
+        "/cv", json={"text": "A different fictional CV"},
+        headers=headers,
+    ).status_code == 200
+    assert client.get(path, headers=headers).json()["cv_outdated"] is True
+    assert client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers
+    ).json()[0]["cv_outdated"] is True
+
+    assert client.delete("/cv", headers=headers).status_code == 204
+    assert client.get(path, headers=headers).json()["cv_outdated"] is True
+    assert client.put(
+        "/cv", json={"text": CV_TEXT}, headers=headers
+    ).status_code == 200
+    assert client.get(path, headers=headers).json()["cv_outdated"] is True
+
+
+def test_deleting_a_job_removes_its_history(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    mock_success(monkeypatch)
+    assert client.post(
+        f"/jobs/{job_id}/compare", headers=headers
+    ).status_code == 200
+    with Session(get_engine()) as session:
+        entry_id = session.query(ComparisonHistory).one().id
+
+    assert client.delete(f"/jobs/{job_id}", headers=headers).status_code == 204
+
+    with Session(get_engine()) as session:
+        assert session.get(ComparisonHistory, entry_id) is None
+
+
+def test_history_lists_multiple_results_newest_first(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    calls = mock_success(monkeypatch)
+    path = f"/jobs/{job_id}/compare"
+
+    assert client.post(path, headers=headers).status_code == 200
+    assert client.post(path, headers=headers).status_code == 200
+
+    history = client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers
+    ).json()
+    assert len(history) == 2
+    assert history[0]["id"] > history[1]["id"]
+    assert all(entry["cv_outdated"] is False for entry in history)
+    assert len(calls) == 2
+
+
+def test_cv_replacement_during_provider_call_marks_result_outdated(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+
+    def replace_cv(*_: object, **__: object) -> httpx.Response:
+        with TestClient(app) as second_client:
+            changed = second_client.put(
+                "/cv",
+                json={"text": "A revised fictional CV"},
+                headers=headers,
+            )
+            assert changed.status_code == 200
+        return provider_response(PROVIDER_RESULT)
+
+    monkeypatch.setattr("comparison._post_once", replace_cv)
+
+    response = client.post(f"/jobs/{job_id}/compare", headers=headers)
+
+    assert response.status_code == 200
+    history = client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers
+    ).json()
+    assert len(history) == 1
+    assert history[0]["cv_outdated"] is True

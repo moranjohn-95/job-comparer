@@ -1,6 +1,6 @@
 # Job Comparer API
 
-A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, a one-off AI comparison endpoint, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
+A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, AI comparison history, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
 
 ## Install
 
@@ -34,7 +34,7 @@ python -m alembic upgrade head
 python -m alembic -x database=test upgrade head
 ```
 
-Compose starts separate development and test PostgreSQL containers. Alembic creates the `users`, `cvs`, `jobs`, and `ai_usage_counters` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
+Compose starts separate development and test PostgreSQL containers. Alembic creates the `users`, `cvs`, `jobs`, `ai_usage_counters`, and `comparison_history` tables in each database. Docker stores their data in separate `postgres_data` and `postgres_test_data` named volumes. To stop both without deleting data, run `docker compose down`.
 
 ## Run the API
 
@@ -110,7 +110,7 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/jobs/$($job.id)" -H
 
 ## Compare a saved CV with an owned job
 
-`POST /jobs/{job_id}/compare` requires a bearer token, an owned saved job, and a saved CV. When enabled, it sends the saved CV text and that job's description to the configured OpenAI model for a one-off comparison. The result has `matched_requirements` with short excerpts from both texts, and `possible_gaps` with a job excerpt and the status `not_found_in_cv`. A possible gap only means the saved CV does not show evidence of a requirement; it does not establish that the user lacks the skill. The endpoint gives no suitability score or hiring prediction. It does not store comparison results.
+`POST /jobs/{job_id}/compare` requires a bearer token, an owned saved job, and a saved CV. When enabled, it sends the saved CV text and that job's description to the configured OpenAI model. The result has `matched_requirements` with short excerpts from both texts, and `possible_gaps` with a job excerpt and the status `not_found_in_cv`. A possible gap only means the saved CV does not show evidence of a requirement; it does not establish that the user lacks the skill. The endpoint gives no suitability score or hiring prediction. A successful comparison saves the structured result in private history; failed comparisons do not create history entries.
 
 With `$token` and `$job` from the examples above, and a saved CV:
 
@@ -136,7 +136,23 @@ Missing or unowned jobs return 404 without contacting the provider; a missing CV
 
 Each account can make at most 3 comparison attempts per UTC day. Across all accounts sharing the same PostgreSQL database, the app allows at most 10 attempts per UTC day and 50 per UTC calendar month. A reached limit returns 429 with the specific account, daily app, or monthly app limit. PostgreSQL locks a shared counter row and commits the reservation before the provider call, so simultaneous requests and extra accounts cannot exceed the app limits. Provider failures and timeouts still count because the provider may have processed and charged for the request. Counters are not reset when an account is deleted. There are no automatic provider retries. Each request uses only `gpt-4o-mini` and caps output at 1,200 tokens.
 
-Provider failures or invalid output return a generic 502 without including CV text, the API key, or provider error details. No comparison result is saved on failure or success. A comparison uses provider tokens and may incur a charge on each request. These controls limit this endpoint's attempts, not currency spent: token prices and input tokenization vary, a timed-out call may still be charged, and use of the same API key outside this app is not counted. Separate app installations with separate databases have separate limits. The request sets `store: false` to disable response storage, but the provider's default abuse monitoring logs may still retain request content for up to 30 days; review [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data?article_id=8510) before sending sensitive CV data. Results are AI generated and should be checked against the source texts; excerpt checks cannot prove the model's interpretation is correct.
+Provider failures or invalid output return a generic 502 without including CV text, the API key, or provider error details. A comparison uses provider tokens and may incur a charge on each request. These controls limit this endpoint's attempts, not currency spent: token prices and input tokenization vary, a timed-out call may still be charged, and use of the same API key outside this app is not counted. Separate app installations with separate databases have separate limits. The request sets `store: false` to disable response storage, but the provider's default abuse monitoring logs may still retain request content for up to 30 days; review [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data?article_id=8510) before sending sensitive CV data. Results are AI generated and should be checked against the source texts; excerpt checks cannot prove the model's interpretation is correct.
+
+## Comparison history
+
+| Method | Endpoint | Result |
+| --- | --- | --- |
+| `GET` | `/jobs/{job_id}/comparisons` | List past comparisons for an owned job, newest first. |
+| `GET` | `/jobs/{job_id}/comparisons/{comparison_id}` | View one saved comparison for an owned job. |
+
+Both endpoints require a bearer token. An unowned or missing job returns 404; a comparison that does not belong to that user and job also returns 404. History entries contain an ID, job ID, creation time, `cv_outdated`, and the saved structured result. `cv_outdated` becomes `true` if the saved CV has been replaced, uploaded again, or deleted since the comparison. It is a reminder to compare again, not a claim about the user's skills.
+
+```powershell
+$history = Invoke-RestMethod -Uri "http://127.0.0.1:8000/jobs/$($job.id)/comparisons" -Headers @{ Authorization = "Bearer $token" }
+Invoke-RestMethod -Uri "http://127.0.0.1:8000/jobs/$($job.id)/comparisons/$($history[0].id)" -Headers @{ Authorization = "Bearer $token" }
+```
+
+History stores the result, including its short CV and job evidence excerpts, plus a CV revision marker. It does not store another full CV or job description. Deleting or replacing a CV leaves existing history and its excerpts in place and marks it outdated. Deleting the saved job or account deletes its history.
 
 ## Run the tests
 

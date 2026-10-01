@@ -1,12 +1,18 @@
+from datetime import datetime
+from uuid import UUID
+
 from sqlalchemy import (
     CheckConstraint,
+    DateTime,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    func,
 )
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -28,6 +34,11 @@ class SavedCV(Base):
         ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
     )
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        nullable=False,
+        server_default=func.gen_random_uuid(),
+    )
 
 
 class SavedJob(Base):
@@ -52,3 +63,31 @@ class AIUsageCounter(Base):
 
     counter_key: Mapped[str] = mapped_column(String(80), primary_key=True)
     call_count: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class ComparisonHistory(Base):
+    __tablename__ = "comparison_history"
+    __table_args__ = (
+        Index(
+            "ix_comparison_history_owner_job_created",
+            "user_id",
+            "job_id",
+            "created_at",
+            "id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    cv_revision: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False)

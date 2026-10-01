@@ -1,5 +1,8 @@
-import jwt
+from datetime import datetime
 from urllib.parse import urlsplit
+from uuid import UUID, uuid4
+
+import jwt
 
 from fastapi import (
     Depends,
@@ -37,7 +40,7 @@ from comparison import (
 )
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
-from models import SavedCV, SavedJob, User
+from models import ComparisonHistory, SavedCV, SavedJob, User
 
 app = FastAPI()
 bearer = HTTPBearer(auto_error=False)
@@ -132,6 +135,14 @@ class JobPublic(BaseModel):
     company_name: str
     description: str
     source_url: str | None
+
+
+class ComparisonHistoryPublic(BaseModel):
+    id: int
+    job_id: int
+    created_at: datetime
+    cv_outdated: bool
+    result: ComparisonResult
 
 
 def normalized_email(email: EmailStr) -> str:
@@ -241,10 +252,13 @@ def persist_cv(user_id: int, cv_text: str, session: Session) -> CVPublic:
             status_code=422,
             detail=f"CV text exceeds {MAX_CV_LENGTH} characters",
         )
-    statement = insert(SavedCV).values(user_id=user_id, text=cv_text)
+    revision = uuid4()
+    statement = insert(SavedCV).values(
+        user_id=user_id, text=cv_text, revision=revision
+    )
     statement = statement.on_conflict_do_update(
         index_elements=[SavedCV.user_id],
-        set_={"text": cv_text},
+        set_={"text": cv_text, "revision": revision},
     )
     session.execute(statement)
     session.commit()
@@ -351,9 +365,13 @@ def compare_job(
     saved_cv = session.get(SavedCV, user.id)
     if saved_cv is None:
         raise HTTPException(status_code=404, detail="CV not found")
+    user_id = user.id
+    cv_text = saved_cv.text
+    cv_revision = saved_cv.revision
+    job_description = job.description
     try:
         settings = get_provider_settings()
-        check_input_limits(saved_cv.text, job.description)
+        check_input_limits(cv_text, job_description)
     except ComparisonDisabled:
         raise HTTPException(
             status_code=503, detail="AI comparisons are disabled"
@@ -366,12 +384,12 @@ def compare_job(
         raise HTTPException(status_code=422, detail=str(error)) from None
 
     try:
-        reserve_attempt(session, user.id)
+        reserve_attempt(session, user_id)
     except UsageLimitReached as error:
         raise HTTPException(status_code=429, detail=str(error)) from None
 
     try:
-        return compare(saved_cv.text, job.description, settings)
+        result = compare(cv_text, job_description, settings)
     except ProviderFailure:
         raise HTTPException(
             status_code=502, detail="AI provider is unavailable"
@@ -381,6 +399,87 @@ def compare_job(
             status_code=502,
             detail="AI provider returned an invalid comparison",
         ) from None
+
+    session.add(
+        ComparisonHistory(
+            user_id=user_id,
+            job_id=job_id,
+            cv_revision=cv_revision,
+            result=result.model_dump(mode="json"),
+        )
+    )
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Saved job or account changed during comparison",
+        ) from None
+    return result
+
+
+def history_public(
+    entry: ComparisonHistory, current_revision: UUID | None
+) -> ComparisonHistoryPublic:
+    return ComparisonHistoryPublic(
+        id=entry.id,
+        job_id=entry.job_id,
+        created_at=entry.created_at,
+        cv_outdated=current_revision != entry.cv_revision,
+        result=ComparisonResult.model_validate(entry.result),
+    )
+
+
+@app.get(
+    "/jobs/{job_id}/comparisons",
+    response_model=list[ComparisonHistoryPublic],
+)
+def list_comparisons(
+    job_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[ComparisonHistoryPublic]:
+    get_owned_job(session, user.id, job_id)
+    saved_cv = session.get(SavedCV, user.id)
+    current_revision = saved_cv.revision if saved_cv is not None else None
+    entries = session.scalars(
+        select(ComparisonHistory)
+        .where(
+            ComparisonHistory.user_id == user.id,
+            ComparisonHistory.job_id == job_id,
+        )
+        .order_by(
+            ComparisonHistory.created_at.desc(),
+            ComparisonHistory.id.desc(),
+        )
+    )
+    return [history_public(entry, current_revision) for entry in entries]
+
+
+@app.get(
+    "/jobs/{job_id}/comparisons/{comparison_id}",
+    response_model=ComparisonHistoryPublic,
+)
+def view_comparison(
+    job_id: int,
+    comparison_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> ComparisonHistoryPublic:
+    get_owned_job(session, user.id, job_id)
+    entry = session.scalar(
+        select(ComparisonHistory).where(
+            ComparisonHistory.id == comparison_id,
+            ComparisonHistory.user_id == user.id,
+            ComparisonHistory.job_id == job_id,
+        )
+    )
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    saved_cv = session.get(SavedCV, user.id)
+    current_revision = saved_cv.revision if saved_cv is not None else None
+    return history_public(entry, current_revision)
 
 
 @app.delete("/jobs/{job_id}", status_code=204)
