@@ -12,8 +12,15 @@ TOKEN_LIFETIME = timedelta(hours=1)
 
 def get_auth_secret() -> str:
     secret = os.getenv("AUTH_SECRET_KEY")
-    if not secret or len(secret) < 32 or secret == "replace-with-a-long-random-secret":
-        raise RuntimeError("Set AUTH_SECRET_KEY in .env to a random value of at least 32 characters.")
+    if (
+        not secret
+        or len(secret) < 32
+        or secret == "replace-with-a-long-random-secret"
+    ):
+        raise RuntimeError(
+            "Set AUTH_SECRET_KEY in .env to a random value of at least "
+            "32 characters."
+        )
     return secret
 
 

@@ -16,7 +16,9 @@ class User(Base):
 class SavedCV(Base):
     __tablename__ = "cvs"
 
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
     text: Mapped[str] = mapped_column(Text, nullable=False)
 
 
@@ -25,7 +27,9 @@ class SavedJob(Base):
     __table_args__ = (Index("ix_jobs_user_id_id", "user_id", "id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     company_name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)

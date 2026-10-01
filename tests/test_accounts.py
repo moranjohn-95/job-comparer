@@ -30,12 +30,18 @@ def email() -> Iterator[str]:
 
 
 def signup(client: TestClient, email: str) -> None:
-    response = client.post("/signup", json={"email": email, "password": PASSWORD})
+    response = client.post(
+        "/signup", json={"email": email, "password": PASSWORD}
+    )
     assert response.status_code == 201
 
 
-def test_signup_hashes_password_and_returns_public_user(client: TestClient, email: str) -> None:
-    response = client.post("/signup", json={"email": email.upper(), "password": PASSWORD})
+def test_signup_hashes_password_and_returns_public_user(
+    client: TestClient, email: str
+) -> None:
+    response = client.post(
+        "/signup", json={"email": email.upper(), "password": PASSWORD}
+    )
 
     assert response.status_code == 201
     assert response.json() == {"id": response.json()["id"], "email": email}
@@ -50,7 +56,9 @@ def test_signup_hashes_password_and_returns_public_user(client: TestClient, emai
 def test_login_returns_bearer_token(client: TestClient, email: str) -> None:
     signup(client, email)
 
-    response = client.post("/login", json={"email": email, "password": PASSWORD})
+    response = client.post(
+        "/login", json={"email": email, "password": PASSWORD}
+    )
 
     assert response.status_code == 200
     assert response.json()["token_type"] == "bearer"
@@ -61,17 +69,25 @@ def test_login_returns_bearer_token(client: TestClient, email: str) -> None:
 def test_duplicate_email_is_rejected(client: TestClient, email: str) -> None:
     signup(client, email)
 
-    response = client.post("/signup", json={"email": email.upper(), "password": PASSWORD})
+    response = client.post(
+        "/signup", json={"email": email.upper(), "password": PASSWORD}
+    )
 
     assert response.status_code == 409
     assert response.json() == {"detail": "Email is already registered"}
 
 
 @pytest.mark.parametrize("wrong_field", ["email", "password"])
-def test_invalid_login_is_rejected(client: TestClient, email: str, wrong_field: str) -> None:
+def test_invalid_login_is_rejected(
+    client: TestClient, email: str, wrong_field: str
+) -> None:
     signup(client, email)
     credentials = {"email": email, "password": PASSWORD}
-    credentials[wrong_field] = "someone-else@example.com" if wrong_field == "email" else "wrong-password"
+    credentials[wrong_field] = (
+        "someone-else@example.com"
+        if wrong_field == "email"
+        else "wrong-password"
+    )
 
     response = client.post("/login", json=credentials)
 
@@ -88,7 +104,9 @@ def test_me_requires_authentication(client: TestClient) -> None:
 
 def test_me_returns_authenticated_user(client: TestClient, email: str) -> None:
     signup(client, email)
-    token = client.post("/login", json={"email": email, "password": PASSWORD}).json()["access_token"]
+    token = client.post(
+        "/login", json={"email": email, "password": PASSWORD}
+    ).json()["access_token"]
 
     response = client.get("/me", headers={"Authorization": f"Bearer {token}"})
 
@@ -98,7 +116,9 @@ def test_me_returns_authenticated_user(client: TestClient, email: str) -> None:
 
 
 def test_me_rejects_invalid_token(client: TestClient) -> None:
-    response = client.get("/me", headers={"Authorization": "Bearer invalid-token"})
+    response = client.get(
+        "/me", headers={"Authorization": "Bearer invalid-token"}
+    )
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Invalid or expired token"}
@@ -111,7 +131,9 @@ def test_me_rejects_invalid_token(client: TestClient) -> None:
         {"email": "valid@example.com", "password": "short"},
     ],
 )
-def test_signup_validates_inputs(client: TestClient, payload: dict[str, str]) -> None:
+def test_signup_validates_inputs(
+    client: TestClient, payload: dict[str, str]
+) -> None:
     response = client.post("/signup", json=payload)
 
     assert response.status_code == 422

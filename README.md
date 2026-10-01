@@ -144,3 +144,16 @@ python -m alembic -x database=test check
 ```
 
 Pytest switches to `TEST_DATABASE_URL` and applies pending migrations before tests. It refuses to run if that URL names the development database or if the live connection does not reach `POSTGRES_TEST_DB`. The account, CV, and job tests create unique users in the test database and remove them afterward. The connection test runs `SELECT 1` and confirms the test database name.
+
+## Lint Python files
+
+Install Flake8 in the active virtual environment and check all project Python
+files, including tests and Alembic migrations:
+
+```powershell
+python -m pip install flake8==7.4.1
+python -m flake8 . --exclude .venv --jobs 1
+```
+
+The check uses Flake8's default 79-character line limit. GitHub Actions runs
+the same command on pushes and pull requests. The `.venv` directory is excluded.

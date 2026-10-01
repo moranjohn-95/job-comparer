@@ -1,7 +1,12 @@
 from alembic import context
 from sqlalchemy import create_engine
 
-from database import Base, assert_test_connection, get_database_url, get_test_database_url
+from database import (
+    Base,
+    assert_test_connection,
+    get_database_url,
+    get_test_database_url,
+)
 import models  # noqa: F401 - registers models with Base.metadata
 
 target_metadata = Base.metadata
@@ -35,7 +40,9 @@ def run_migrations_online() -> None:
         with engine.connect() as connection:
             if is_test:
                 assert_test_connection(connection)
-            context.configure(connection=connection, target_metadata=target_metadata)
+            context.configure(
+                connection=connection, target_metadata=target_metadata
+            )
             with context.begin_transaction():
                 context.run_migrations()
     finally:

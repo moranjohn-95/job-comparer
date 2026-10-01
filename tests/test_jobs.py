@@ -3,7 +3,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from database import get_engine
@@ -32,17 +32,25 @@ def client() -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def create_user(client: TestClient) -> Iterator[Callable[[], tuple[int, dict[str, str]]]]:
+def create_user(
+    client: TestClient,
+) -> Iterator[Callable[[], tuple[int, dict[str, str]]]]:
     emails: list[str] = []
 
     def create() -> tuple[int, dict[str, str]]:
         email = f"job-test-{uuid4().hex}@example.com"
         emails.append(email)
-        signup = client.post("/signup", json={"email": email, "password": PASSWORD})
+        signup = client.post(
+            "/signup", json={"email": email, "password": PASSWORD}
+        )
         assert signup.status_code == 201
-        login = client.post("/login", json={"email": email, "password": PASSWORD})
+        login = client.post(
+            "/login", json={"email": email, "password": PASSWORD}
+        )
         assert login.status_code == 200
-        return signup.json()["id"], {"Authorization": f"Bearer {login.json()['access_token']}"}
+        return signup.json()["id"], {
+            "Authorization": f"Bearer {login.json()['access_token']}"
+        }
 
     yield create
     with Session(get_engine()) as session:
@@ -60,7 +68,9 @@ def test_create_persists_job_and_views_it(
     assert created.status_code == 201
     job_id = created.json()["id"]
     assert created.json() == {"id": job_id, **JOB}
-    assert client.get(f"/jobs/{job_id}", headers=headers).json() == created.json()
+    assert (
+        client.get(f"/jobs/{job_id}", headers=headers).json() == created.json()
+    )
     with Session(get_engine()) as session:
         saved = session.get(SavedJob, job_id)
         assert saved is not None
@@ -74,8 +84,14 @@ def test_list_returns_only_own_jobs_newest_first_and_allows_no_url(
 ) -> None:
     _, headers = create_user()
     first = client.post("/jobs", json=JOB, headers=headers).json()
-    second_payload = {"title": "Data Engineer", "company_name": "Other Co", "description": "Build pipelines."}
-    second_response = client.post("/jobs", json=second_payload, headers=headers)
+    second_payload = {
+        "title": "Data Engineer",
+        "company_name": "Other Co",
+        "description": "Build pipelines.",
+    }
+    second_response = client.post(
+        "/jobs", json=second_payload, headers=headers
+    )
 
     assert second_response.status_code == 201
     second = second_response.json()
@@ -101,7 +117,10 @@ def test_delete_removes_only_the_owned_job(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"company_name": JOB["company_name"], "description": JOB["description"]},
+        {
+            "company_name": JOB["company_name"],
+            "description": JOB["description"],
+        },
         {"title": JOB["title"], "description": JOB["description"]},
         {"title": JOB["title"], "company_name": JOB["company_name"]},
         {**JOB, "title": " \t "},
@@ -116,9 +135,19 @@ def test_delete_removes_only_the_owned_job(
         {**JOB, "source_url": "https://example.com/bad path"},
     ],
     ids=[
-        "missing-title", "missing-company", "missing-description", "blank-title", "blank-company",
-        "blank-description", "long-title", "long-company", "long-description", "long-url",
-        "unsupported-url-scheme", "url-without-host", "url-with-space",
+        "missing-title",
+        "missing-company",
+        "missing-description",
+        "blank-title",
+        "blank-company",
+        "blank-description",
+        "long-title",
+        "long-company",
+        "long-description",
+        "long-url",
+        "unsupported-url-scheme",
+        "url-without-host",
+        "url-with-space",
     ],
 )
 def test_invalid_jobs_are_rejected_without_saving(
@@ -137,10 +166,19 @@ def test_invalid_jobs_are_rejected_without_saving(
 
 @pytest.mark.parametrize(
     "method,path",
-    [("POST", "/jobs"), ("GET", "/jobs"), ("GET", "/jobs/1"), ("DELETE", "/jobs/1")],
+    [
+        ("POST", "/jobs"),
+        ("GET", "/jobs"),
+        ("GET", "/jobs/1"),
+        ("DELETE", "/jobs/1"),
+    ],
 )
-def test_job_endpoints_require_authentication(client: TestClient, method: str, path: str) -> None:
-    response = client.request(method, path, json=JOB if method == "POST" else None)
+def test_job_endpoints_require_authentication(
+    client: TestClient, method: str, path: str
+) -> None:
+    response = client.request(
+        method, path, json=JOB if method == "POST" else None
+    )
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Authentication required"}
@@ -155,14 +193,43 @@ def test_two_users_cannot_list_view_or_delete_each_others_jobs(
     first_id = first_job["id"]
 
     assert client.get("/jobs", headers=second_headers).json() == []
-    assert client.get(f"/jobs/{first_id}", headers=second_headers).status_code == 404
-    assert client.delete(f"/jobs/{first_id}", headers=second_headers).status_code == 404
-    assert client.get(f"/jobs/{first_id}", headers=first_headers).json() == first_job
+    assert (
+        client.get(f"/jobs/{first_id}", headers=second_headers).status_code
+        == 404
+    )
+    assert (
+        client.delete(f"/jobs/{first_id}", headers=second_headers).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/jobs/{first_id}", headers=first_headers).json()
+        == first_job
+    )
 
-    second_job = client.post("/jobs", json={**JOB, "title": "Private role"}, headers=second_headers).json()
+    second_job = client.post(
+        "/jobs", json={**JOB, "title": "Private role"}, headers=second_headers
+    ).json()
     assert client.get("/jobs", headers=first_headers).json() == [first_job]
     assert client.get("/jobs", headers=second_headers).json() == [second_job]
-    assert client.get(f"/jobs/{second_job['id']}", headers=first_headers).status_code == 404
-    assert client.delete(f"/jobs/{second_job['id']}", headers=first_headers).status_code == 404
-    assert client.delete(f"/jobs/{second_job['id']}", headers=second_headers).status_code == 204
-    assert client.get(f"/jobs/{first_id}", headers=first_headers).json() == first_job
+    assert (
+        client.get(
+            f"/jobs/{second_job['id']}", headers=first_headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete(
+            f"/jobs/{second_job['id']}", headers=first_headers
+        ).status_code
+        == 404
+    )
+    assert (
+        client.delete(
+            f"/jobs/{second_job['id']}", headers=second_headers
+        ).status_code
+        == 204
+    )
+    assert (
+        client.get(f"/jobs/{first_id}", headers=first_headers).json()
+        == first_job
+    )

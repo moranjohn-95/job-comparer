@@ -30,14 +30,22 @@ def make_pdf(*, text: str | None = None, image: bool = False) -> bytes:
     else:
         resources = b"/Font << /F1 4 0 R >>"
         fourth = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
-        content = b"BT /F1 12 Tf 72 720 Td (" + (text or "").encode("ascii") + b") Tj ET"
+        content = (
+            b"BT /F1 12 Tf 72 720 Td ("
+            + (text or "").encode("ascii")
+            + b") Tj ET"
+        )
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
         b"/Resources << " + resources + b" >> /Contents 5 0 R >>",
         fourth,
-        b"<< /Length " + str(len(content)).encode() + b" >>\nstream\n" + content + b"\nendstream",
+        b"<< /Length "
+        + str(len(content)).encode()
+        + b" >>\nstream\n"
+        + content
+        + b"\nendstream",
     ]
     output = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
     offsets = [0]
@@ -49,8 +57,11 @@ def make_pdf(*, text: str | None = None, image: bool = False) -> bytes:
     for offset in offsets[1:]:
         output.extend(f"{offset:010d} 00000 n \n".encode())
     output.extend(
-        b"trailer\n<< /Size " + str(len(offsets)).encode() +
-        b" /Root 1 0 R >>\nstartxref\n" + str(startxref).encode() + b"\n%%EOF\n"
+        b"trailer\n<< /Size "
+        + str(len(offsets)).encode()
+        + b" /Root 1 0 R >>\nstartxref\n"
+        + str(startxref).encode()
+        + b"\n%%EOF\n"
     )
     return bytes(output)
 
@@ -64,8 +75,12 @@ def make_docx(text: str) -> bytes:
     return output.getvalue()
 
 
-def upload(client: TestClient, headers: dict[str, str], filename: str, data: bytes):
-    return client.post("/cv/upload", files={"file": (filename, data)}, headers=headers)
+def upload(
+    client: TestClient, headers: dict[str, str], filename: str, data: bytes
+):
+    return client.post(
+        "/cv/upload", files={"file": (filename, data)}, headers=headers
+    )
 
 
 @pytest.fixture
@@ -75,17 +90,25 @@ def client() -> Iterator[TestClient]:
 
 
 @pytest.fixture
-def create_user(client: TestClient) -> Iterator[Callable[[], tuple[int, dict[str, str]]]]:
+def create_user(
+    client: TestClient,
+) -> Iterator[Callable[[], tuple[int, dict[str, str]]]]:
     emails: list[str] = []
 
     def create() -> tuple[int, dict[str, str]]:
         email = f"cv-test-{uuid4().hex}@example.com"
         emails.append(email)
-        signup = client.post("/signup", json={"email": email, "password": PASSWORD})
+        signup = client.post(
+            "/signup", json={"email": email, "password": PASSWORD}
+        )
         assert signup.status_code == 201
-        login = client.post("/login", json={"email": email, "password": PASSWORD})
+        login = client.post(
+            "/login", json={"email": email, "password": PASSWORD}
+        )
         assert login.status_code == 200
-        return signup.json()["id"], {"Authorization": f"Bearer {login.json()['access_token']}"}
+        return signup.json()["id"], {
+            "Authorization": f"Bearer {login.json()['access_token']}"
+        }
 
     yield create
     with Session(get_engine()) as session:
@@ -114,14 +137,27 @@ def test_saving_again_replaces_the_only_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     user_id, headers = create_user()
-    assert client.put("/cv", json={"text": "First version"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "First version"}, headers=headers
+        ).status_code
+        == 200
+    )
 
-    replaced = client.put("/cv", json={"text": "Updated version"}, headers=headers)
+    replaced = client.put(
+        "/cv", json={"text": "Updated version"}, headers=headers
+    )
 
     assert replaced.status_code == 200
-    assert client.get("/cv", headers=headers).json() == {"text": "Updated version"}
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "Updated version"
+    }
     with Session(get_engine()) as session:
-        count = session.scalar(select(func.count()).select_from(SavedCV).where(SavedCV.user_id == user_id))
+        count = session.scalar(
+            select(func.count())
+            .select_from(SavedCV)
+            .where(SavedCV.user_id == user_id)
+        )
         assert count == 1
 
 
@@ -129,7 +165,12 @@ def test_delete_removes_the_saved_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     user_id, headers = create_user()
-    assert client.put("/cv", json={"text": "To delete"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "To delete"}, headers=headers
+        ).status_code
+        == 200
+    )
 
     deleted = client.delete("/cv", headers=headers)
     missing = client.get("/cv", headers=headers)
@@ -142,7 +183,9 @@ def test_delete_removes_the_saved_cv(
 
 
 @pytest.mark.parametrize("method", ["GET", "PUT", "DELETE"])
-def test_cv_endpoints_require_authentication(client: TestClient, method: str) -> None:
+def test_cv_endpoints_require_authentication(
+    client: TestClient, method: str
+) -> None:
     body = {"text": "A valid CV"} if method == "PUT" else None
 
     response = client.request(method, "/cv", json=body)
@@ -156,20 +199,40 @@ def test_users_cannot_read_or_change_each_others_cv(
 ) -> None:
     first_id, first_headers = create_user()
     _, second_headers = create_user()
-    assert client.put("/cv", json={"text": "First user's private CV"}, headers=first_headers).status_code == 200
+    assert (
+        client.put(
+            "/cv",
+            json={"text": "First user's private CV"},
+            headers=first_headers,
+        ).status_code
+        == 200
+    )
 
     assert client.get("/cv", headers=second_headers).status_code == 404
     spoofed = client.put(
-        "/cv", json={"text": "Attempted overwrite", "user_id": first_id}, headers=second_headers
+        "/cv",
+        json={"text": "Attempted overwrite", "user_id": first_id},
+        headers=second_headers,
     )
     assert spoofed.status_code == 422
     assert client.get("/cv", headers=second_headers).status_code == 404
 
-    assert client.put("/cv", json={"text": "Second user's CV"}, headers=second_headers).status_code == 200
-    assert client.get("/cv", headers=first_headers).json() == {"text": "First user's private CV"}
-    assert client.get("/cv", headers=second_headers).json() == {"text": "Second user's CV"}
+    assert (
+        client.put(
+            "/cv", json={"text": "Second user's CV"}, headers=second_headers
+        ).status_code
+        == 200
+    )
+    assert client.get("/cv", headers=first_headers).json() == {
+        "text": "First user's private CV"
+    }
+    assert client.get("/cv", headers=second_headers).json() == {
+        "text": "Second user's CV"
+    }
     assert client.delete("/cv", headers=second_headers).status_code == 204
-    assert client.get("/cv", headers=first_headers).json() == {"text": "First user's private CV"}
+    assert client.get("/cv", headers=first_headers).json() == {
+        "text": "First user's private CV"
+    }
 
 
 @pytest.mark.parametrize(
@@ -177,7 +240,10 @@ def test_users_cannot_read_or_change_each_others_cv(
     [
         ("", "CV text must not be blank"),
         (" \t\n ", "CV text must not be blank"),
-        ("x" * (MAX_CV_LENGTH + 1), f"CV text exceeds {MAX_CV_LENGTH} characters"),
+        (
+            "x" * (MAX_CV_LENGTH + 1),
+            f"CV text exceeds {MAX_CV_LENGTH} characters",
+        ),
     ],
     ids=["empty", "whitespace", "too-long"],
 )
@@ -188,7 +254,12 @@ def test_invalid_cv_does_not_replace_existing_text(
     detail: str,
 ) -> None:
     _, headers = create_user()
-    assert client.put("/cv", json={"text": "Valid CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Valid CV"}, headers=headers
+        ).status_code
+        == 200
+    )
 
     response = client.put("/cv", json={"text": invalid_text}, headers=headers)
 
@@ -201,16 +272,32 @@ def test_pdf_upload_extracts_text_and_replaces_saved_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     user_id, headers = create_user()
-    assert client.put("/cv", json={"text": "Original CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Original CV"}, headers=headers
+        ).status_code
+        == 200
+    )
 
-    response = upload(client, headers, "resume.PDF", make_pdf(text="PDF resume text"))
+    response = upload(
+        client, headers, "resume.PDF", make_pdf(text="PDF resume text")
+    )
 
     assert response.status_code == 200
     assert response.json() == {"text": "PDF resume text"}
-    assert client.get("/cv", headers=headers).json() == {"text": "PDF resume text"}
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "PDF resume text"
+    }
     with Session(get_engine()) as session:
         assert session.get(SavedCV, user_id).text == "PDF resume text"
-        assert session.scalar(select(func.count()).select_from(SavedCV).where(SavedCV.user_id == user_id)) == 1
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(SavedCV)
+                .where(SavedCV.user_id == user_id)
+            )
+            == 1
+        )
 
 
 def test_docx_upload_extracts_paragraphs_and_tables(
@@ -235,19 +322,46 @@ def test_docx_upload_extracts_paragraphs_and_tables(
 @pytest.mark.parametrize(
     "filename,data,status_code,detail",
     [
-        ("resume.txt", b"Plain text CV", 415, "Unsupported file type; upload a PDF or DOCX"),
-        ("resume.pdf", b"This is not a PDF", 415, "File content does not match PDF format"),
-        ("resume.docx", make_pdf(text="Wrong format"), 415, "File content does not match DOCX format"),
+        (
+            "resume.txt",
+            b"Plain text CV",
+            415,
+            "Unsupported file type; upload a PDF or DOCX",
+        ),
+        (
+            "resume.pdf",
+            b"This is not a PDF",
+            415,
+            "File content does not match PDF format",
+        ),
+        (
+            "resume.docx",
+            make_pdf(text="Wrong format"),
+            415,
+            "File content does not match DOCX format",
+        ),
         ("resume.pdf", b"%PDF-1.4\ninvalid", 422, "Damaged PDF file"),
         ("resume.docx", b"PK\x03\x04invalid", 422, "Damaged DOCX file"),
-        ("resume.pdf", make_pdf(image=True), 422, "Scanned PDF has no selectable text; OCR is not supported"),
+        (
+            "resume.pdf",
+            make_pdf(image=True),
+            422,
+            "Scanned PDF has no selectable text; OCR is not supported",
+        ),
         ("resume.pdf", make_pdf(), 422, "PDF contains no readable text"),
         ("resume.docx", make_docx(""), 422, "DOCX contains no readable text"),
         ("resume.pdf", b"", 422, "Uploaded file is empty"),
     ],
     ids=[
-        "unsupported-extension", "pdf-content-mismatch", "docx-content-mismatch", "damaged-pdf",
-        "damaged-docx", "scanned-pdf", "text-empty-pdf", "text-empty-docx", "empty-file",
+        "unsupported-extension",
+        "pdf-content-mismatch",
+        "docx-content-mismatch",
+        "damaged-pdf",
+        "damaged-docx",
+        "scanned-pdf",
+        "text-empty-pdf",
+        "text-empty-docx",
+        "empty-file",
     ],
 )
 def test_invalid_upload_preserves_saved_cv(
@@ -259,20 +373,32 @@ def test_invalid_upload_preserves_saved_cv(
     detail: str,
 ) -> None:
     _, headers = create_user()
-    assert client.put("/cv", json={"text": "Keep this CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Keep this CV"}, headers=headers
+        ).status_code
+        == 200
+    )
 
     response = upload(client, headers, filename, data)
 
     assert response.status_code == status_code
     assert response.json() == {"detail": detail}
-    assert client.get("/cv", headers=headers).json() == {"text": "Keep this CV"}
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "Keep this CV"
+    }
 
 
 def test_password_protected_pdf_is_rejected_without_replacing_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     _, headers = create_user()
-    assert client.put("/cv", json={"text": "Keep this CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Keep this CV"}, headers=headers
+        ).status_code
+        == 200
+    )
     writer = PdfWriter()
     writer.add_blank_page(width=300, height=300)
     writer.encrypt("secret")
@@ -282,34 +408,58 @@ def test_password_protected_pdf_is_rejected_without_replacing_cv(
     response = upload(client, headers, "locked.pdf", output.getvalue())
 
     assert response.status_code == 422
-    assert response.json() == {"detail": "Password-protected PDF files are not supported"}
-    assert client.get("/cv", headers=headers).json() == {"text": "Keep this CV"}
+    assert response.json() == {
+        "detail": "Password-protected PDF files are not supported"
+    }
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "Keep this CV"
+    }
 
 
 def test_upload_size_limit_preserves_saved_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     _, headers = create_user()
-    assert client.put("/cv", json={"text": "Keep this CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Keep this CV"}, headers=headers
+        ).status_code
+        == 200
+    )
 
-    response = upload(client, headers, "large.pdf", b"%PDF-" + b"x" * MAX_UPLOAD_BYTES)
+    response = upload(
+        client, headers, "large.pdf", b"%PDF-" + b"x" * MAX_UPLOAD_BYTES
+    )
 
     assert response.status_code == 413
     assert response.json() == {"detail": "File exceeds the 5 MiB upload limit"}
-    assert client.get("/cv", headers=headers).json() == {"text": "Keep this CV"}
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "Keep this CV"
+    }
 
 
 def test_extracted_text_limit_preserves_saved_cv(
     client: TestClient, create_user: Callable[[], tuple[int, dict[str, str]]]
 ) -> None:
     _, headers = create_user()
-    assert client.put("/cv", json={"text": "Keep this CV"}, headers=headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "Keep this CV"}, headers=headers
+        ).status_code
+        == 200
+    )
 
-    response = upload(client, headers, "long.docx", make_docx("x" * (MAX_CV_LENGTH + 1)))
+    response = upload(
+        client, headers, "long.docx", make_docx("x" * (MAX_CV_LENGTH + 1))
+    )
 
     assert response.status_code == 422
-    assert response.json() == {"detail": f"CV text exceeds {MAX_CV_LENGTH} characters"}
-    assert client.get("/cv", headers=headers).json() == {"text": "Keep this CV"}
+    assert response.json() == {
+        "detail": f"CV text exceeds {MAX_CV_LENGTH} characters"
+    }
+    assert client.get("/cv", headers=headers).json() == {
+        "text": "Keep this CV"
+    }
 
 
 def test_upload_requires_authentication(client: TestClient) -> None:
@@ -324,11 +474,25 @@ def test_upload_replaces_only_the_authenticated_users_cv(
 ) -> None:
     _, first_headers = create_user()
     _, second_headers = create_user()
-    assert client.put("/cv", json={"text": "First user's CV"}, headers=first_headers).status_code == 200
+    assert (
+        client.put(
+            "/cv", json={"text": "First user's CV"}, headers=first_headers
+        ).status_code
+        == 200
+    )
     assert client.get("/cv", headers=second_headers).status_code == 404
 
-    response = upload(client, second_headers, "second.docx", make_docx("Second user's uploaded CV"))
+    response = upload(
+        client,
+        second_headers,
+        "second.docx",
+        make_docx("Second user's uploaded CV"),
+    )
 
     assert response.status_code == 200
-    assert client.get("/cv", headers=second_headers).json() == {"text": "Second user's uploaded CV"}
-    assert client.get("/cv", headers=first_headers).json() == {"text": "First user's CV"}
+    assert client.get("/cv", headers=second_headers).json() == {
+        "text": "Second user's uploaded CV"
+    }
+    assert client.get("/cv", headers=first_headers).json() == {
+        "text": "First user's CV"
+    }

@@ -15,7 +15,12 @@ def upgrade() -> None:
     op.create_table(
         "jobs",
         sa.Column("id", sa.Integer(), primary_key=True),
-        sa.Column("user_id", sa.Integer(), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+        sa.Column(
+            "user_id",
+            sa.Integer(),
+            sa.ForeignKey("users.id", ondelete="CASCADE"),
+            nullable=False,
+        ),
         sa.Column("title", sa.String(length=200), nullable=False),
         sa.Column("company_name", sa.String(length=200), nullable=False),
         sa.Column("description", sa.Text(), nullable=False),

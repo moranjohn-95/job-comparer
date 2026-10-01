@@ -11,4 +11,7 @@ def test_separate_test_database_connection() -> None:
     engine = get_engine()
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT 1")) == 1
-        assert connection.scalar(text("SELECT current_database()")) == expected_database
+        assert (
+            connection.scalar(text("SELECT current_database()"))
+            == expected_database
+        )

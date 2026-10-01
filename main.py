@@ -1,7 +1,15 @@
 import jwt
 from urllib.parse import urlsplit
 
-from fastapi import Depends, FastAPI, File, HTTPException, Response, UploadFile, status
+from fastapi import (
+    Depends,
+    FastAPI,
+    File,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import select
@@ -9,8 +17,19 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from auth import create_access_token, decode_access_token, hash_password, verify_password
-from comparison import ComparisonResult, InvalidProviderOutput, ProviderConfigurationError, ProviderFailure, compare
+from auth import (
+    create_access_token,
+    decode_access_token,
+    hash_password,
+    verify_password,
+)
+from comparison import (
+    ComparisonResult,
+    InvalidProviderOutput,
+    ProviderConfigurationError,
+    ProviderFailure,
+    compare,
+)
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
 from models import SavedCV, SavedJob, User
@@ -85,7 +104,9 @@ class JobInput(BaseModel):
         if value is None:
             return None
         value = value.strip()
-        if not value or any(character.isspace() or ord(character) < 32 for character in value):
+        if not value or any(
+            character.isspace() or ord(character) < 32 for character in value
+        ):
             raise ValueError("must be an absolute http or https URL")
         try:
             parsed = urlsplit(value)
@@ -153,26 +174,40 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/signup", response_model=UserPublic, status_code=status.HTTP_201_CREATED)
-def signup(payload: SignupRequest, session: Session = Depends(get_session)) -> User:
+@app.post(
+    "/signup", response_model=UserPublic, status_code=status.HTTP_201_CREATED
+)
+def signup(
+    payload: SignupRequest, session: Session = Depends(get_session)
+) -> User:
     email = normalized_email(payload.email)
     if session.scalar(select(User).where(User.email == email)) is not None:
-        raise HTTPException(status_code=409, detail="Email is already registered")
+        raise HTTPException(
+            status_code=409, detail="Email is already registered"
+        )
     user = User(email=email, password_hash=hash_password(payload.password))
     session.add(user)
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        raise HTTPException(status_code=409, detail="Email is already registered") from None
+        raise HTTPException(
+            status_code=409, detail="Email is already registered"
+        ) from None
     session.refresh(user)
     return user
 
 
 @app.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, session: Session = Depends(get_session)) -> TokenResponse:
-    user = session.scalar(select(User).where(User.email == normalized_email(payload.email)))
-    if user is None or not verify_password(payload.password, user.password_hash):
+def login(
+    payload: LoginRequest, session: Session = Depends(get_session)
+) -> TokenResponse:
+    user = session.scalar(
+        select(User).where(User.email == normalized_email(payload.email))
+    )
+    if user is None or not verify_password(
+        payload.password, user.password_hash
+    ):
         raise invalid_credentials()
     return TokenResponse(access_token=create_access_token(user.id))
 
@@ -193,9 +228,14 @@ def save_cv(
 
 def persist_cv(user_id: int, cv_text: str, session: Session) -> CVPublic:
     if not cv_text.strip():
-        raise HTTPException(status_code=422, detail="CV text must not be blank")
+        raise HTTPException(
+            status_code=422, detail="CV text must not be blank"
+        )
     if len(cv_text) > MAX_CV_LENGTH:
-        raise HTTPException(status_code=422, detail=f"CV text exceeds {MAX_CV_LENGTH} characters")
+        raise HTTPException(
+            status_code=422,
+            detail=f"CV text exceeds {MAX_CV_LENGTH} characters",
+        )
     statement = insert(SavedCV).values(user_id=user_id, text=cv_text)
     statement = statement.on_conflict_do_update(
         index_elements=[SavedCV.user_id],
@@ -214,10 +254,14 @@ def upload_cv(
 ) -> CVPublic:
     try:
         if file.size is not None and file.size > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="File exceeds the 5 MiB upload limit")
+            raise HTTPException(
+                status_code=413, detail="File exceeds the 5 MiB upload limit"
+            )
         data = file.file.read(MAX_UPLOAD_BYTES + 1)
         if len(data) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="File exceeds the 5 MiB upload limit")
+            raise HTTPException(
+                status_code=413, detail="File exceeds the 5 MiB upload limit"
+            )
         extracted_text = extract_cv_text(file.filename, data)
         return persist_cv(user.id, extracted_text, session)
     finally:
@@ -225,7 +269,9 @@ def upload_cv(
 
 
 @app.get("/cv", response_model=CVPublic)
-def get_cv(user: User = Depends(current_user), session: Session = Depends(get_session)) -> SavedCV:
+def get_cv(
+    user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> SavedCV:
     saved_cv = session.get(SavedCV, user.id)
     if saved_cv is None:
         raise HTTPException(status_code=404, detail="CV not found")
@@ -233,7 +279,9 @@ def get_cv(user: User = Depends(current_user), session: Session = Depends(get_se
 
 
 @app.delete("/cv", status_code=204)
-def delete_cv(user: User = Depends(current_user), session: Session = Depends(get_session)) -> Response:
+def delete_cv(
+    user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> Response:
     saved_cv = session.get(SavedCV, user.id)
     if saved_cv is None:
         raise HTTPException(status_code=404, detail="CV not found")
@@ -243,7 +291,11 @@ def delete_cv(user: User = Depends(current_user), session: Session = Depends(get
 
 
 def get_owned_job(session: Session, user_id: int, job_id: int) -> SavedJob:
-    job = session.scalar(select(SavedJob).where(SavedJob.id == job_id, SavedJob.user_id == user_id))
+    job = session.scalar(
+        select(SavedJob).where(
+            SavedJob.id == job_id, SavedJob.user_id == user_id
+        )
+    )
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
@@ -263,12 +315,24 @@ def create_job(
 
 
 @app.get("/jobs", response_model=list[JobPublic])
-def list_jobs(user: User = Depends(current_user), session: Session = Depends(get_session)) -> list[SavedJob]:
-    return list(session.scalars(select(SavedJob).where(SavedJob.user_id == user.id).order_by(SavedJob.id.desc())))
+def list_jobs(
+    user: User = Depends(current_user), session: Session = Depends(get_session)
+) -> list[SavedJob]:
+    return list(
+        session.scalars(
+            select(SavedJob)
+            .where(SavedJob.user_id == user.id)
+            .order_by(SavedJob.id.desc())
+        )
+    )
 
 
 @app.get("/jobs/{job_id}", response_model=JobPublic)
-def view_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)) -> SavedJob:
+def view_job(
+    job_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> SavedJob:
     return get_owned_job(session, user.id, job_id)
 
 
@@ -285,15 +349,26 @@ def compare_job(
     try:
         return compare(saved_cv.text, job.description)
     except ProviderConfigurationError:
-        raise HTTPException(status_code=503, detail="AI provider is not configured") from None
+        raise HTTPException(
+            status_code=503, detail="AI provider is not configured"
+        ) from None
     except ProviderFailure:
-        raise HTTPException(status_code=502, detail="AI provider is unavailable") from None
+        raise HTTPException(
+            status_code=502, detail="AI provider is unavailable"
+        ) from None
     except InvalidProviderOutput:
-        raise HTTPException(status_code=502, detail="AI provider returned an invalid comparison") from None
+        raise HTTPException(
+            status_code=502,
+            detail="AI provider returned an invalid comparison",
+        ) from None
 
 
 @app.delete("/jobs/{job_id}", status_code=204)
-def delete_job(job_id: int, user: User = Depends(current_user), session: Session = Depends(get_session)) -> Response:
+def delete_job(
+    job_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> Response:
     job = get_owned_job(session, user.id, job_id)
     session.delete(job)
     session.commit()
