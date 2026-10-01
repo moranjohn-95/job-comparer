@@ -1,4 +1,4 @@
-export const HEALTH_URL = 'http://127.0.0.1:8000/health'
+export const HEALTH_URL = 'http://127.0.0.1:8001/health'
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {
   try {

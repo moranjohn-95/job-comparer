@@ -57,14 +57,14 @@ function App() {
         </p>
         {status === 'unavailable' && (
           <div className="connection-help">
-            <p>Start the FastAPI server on port 8000, then try again.</p>
+            <p>Start the FastAPI server at http://127.0.0.1:8001, then try again.</p>
             <button type="button" onClick={retry}>Retry connection</button>
           </div>
         )}
       </main>
 
       <footer className="site-footer">
-        Local development · Frontend on 5173 · API on 8000
+        Local development · Frontend on 5173 · API on 8001
       </footer>
     </div>
   )

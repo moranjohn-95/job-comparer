@@ -1,7 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import App from './App'
-import { HEALTH_URL } from './api'
 
 afterEach(() => {
   cleanup()
@@ -22,7 +21,7 @@ test('shows a connected status for a healthy API response', async () => {
   expect(screen.getByRole('status')).toHaveTextContent('API connected')
   expect(fetchMock).toHaveBeenCalledOnce()
   expect(fetchMock).toHaveBeenCalledWith(
-    HEALTH_URL,
+    'http://127.0.0.1:8001/health',
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
   )
 })
@@ -38,6 +37,9 @@ test('shows an unavailable status for an unexpected health response', async () =
   await screen.findByText('API unavailable')
   expect(screen.getByRole('status')).toHaveTextContent('API unavailable')
   expect(screen.getByRole('button', { name: 'Retry connection' })).toBeVisible()
+  expect(screen.getByText(
+    'Start the FastAPI server at http://127.0.0.1:8001, then try again.',
+  )).toBeVisible()
 })
 
 test('treats an HTTP error as unavailable without reading its body', async () => {
