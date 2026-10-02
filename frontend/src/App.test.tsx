@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
 
 afterEach(() => {
@@ -16,10 +16,8 @@ test('shows a connected status for a healthy API response', async () => {
 
   render(<App />)
 
-  expect(screen.getByText('Job Comparer')).toBeVisible()
-  await screen.findByText('API connected')
-  expect(screen.getByRole('status')).toHaveTextContent('API connected')
-  expect(fetchMock).toHaveBeenCalledOnce()
+  expect(screen.getByText('Compare your saved CV with job descriptions.')).toBeVisible()
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
   expect(fetchMock).toHaveBeenCalledWith(
     'http://127.0.0.1:8001/health',
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
@@ -34,9 +32,7 @@ test('shows an unavailable status for an unexpected health response', async () =
 
   render(<App />)
 
-  await screen.findByText('API unavailable')
-  expect(screen.getByRole('status')).toHaveTextContent('API unavailable')
-  expect(screen.getByRole('button', { name: 'Retry connection' })).toBeVisible()
+  expect(await screen.findByRole('button', { name: 'Retry connection' })).toBeVisible()
   expect(screen.getByText(
     'Start the FastAPI server at http://127.0.0.1:8001, then try again.',
   )).toBeVisible()
@@ -51,7 +47,7 @@ test('treats an HTTP error as unavailable without reading its body', async () =>
 
   render(<App />)
 
-  await screen.findByText('API unavailable')
+  await screen.findByRole('button', { name: 'Retry connection' })
   expect(readBody).not.toHaveBeenCalled()
 })
 
@@ -65,15 +61,12 @@ test('can retry after a network failure', async () => {
   vi.stubGlobal('fetch', fetchMock)
 
   render(<App />)
-  await screen.findByText('API unavailable')
+  await screen.findByRole('button', { name: 'Retry connection' })
   fireEvent.click(screen.getByRole('button', { name: 'Retry connection' }))
-
-  await screen.findByText('API connected')
-  expect(screen.getByRole('status')).toHaveTextContent('API connected')
-  expect(fetchMock).toHaveBeenCalledTimes(2)
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
 })
 
-test('opens the login view from the sidebar', () => {
+test('opens the login view from the public home navigation', () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
   render(<App />)
   fireEvent.click(screen.getByRole('button', { name: 'Log in' }))

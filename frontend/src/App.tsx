@@ -3,7 +3,7 @@ import { ApiError, checkHealth, getCurrentUser, signIn, type CurrentUser } from 
 import './App.css'
 
 type ConnectionStatus = 'checking' | 'connected' | 'unavailable'
-type View = 'dashboard' | 'login'
+type View = 'home' | 'dashboard' | 'login'
 type IconName = 'grid' | 'briefcase' | 'document' | 'arrows' | 'login'
 const statusText: Record<ConnectionStatus, string> = { checking: 'Checking API', connected: 'API connected', unavailable: 'API unavailable' }
 
@@ -23,13 +23,17 @@ function HealthStatus({ status }: { status: ConnectionStatus }) { return <div cl
 
 function LoginView({ onBack, onLogin, error, isSubmitting }: { onBack: () => void; onLogin: (email: string, password: string) => void; error: string | null; isSubmitting: boolean }) {
   function submit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); const form = new FormData(event.currentTarget); onLogin(String(form.get('email')), String(form.get('password'))) }
-  return <main className="login-page"><section className="login-card" aria-labelledby="login-heading"><button type="button" className="text-button" onClick={onBack}>Back to dashboard</button><div className="brand login-brand">Job Comparer</div><p className="eyebrow">Account</p><h1 id="login-heading">Log in</h1><p className="login-intro">Sign in to access your Job Comparer account.</p><form className="login-form" onSubmit={submit}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" autoComplete="email" required disabled={isSubmitting} /><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete="current-password" required disabled={isSubmitting} />{error && <p className="form-error" role="alert">{error}</p>}<button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Logging in…' : 'Log in'}</button></form></section></main>
+  return <main className="login-page"><section className="login-card" aria-labelledby="login-heading"><button type="button" className="text-button" onClick={onBack}>Back to home</button><div className="brand login-brand">Job Comparer</div><p className="eyebrow">Account</p><h1 id="login-heading">Log in</h1><p className="login-intro">Sign in to access your Job Comparer account.</p><form className="login-form" onSubmit={submit}><label htmlFor="email">Email address</label><input id="email" name="email" type="email" autoComplete="email" required disabled={isSubmitting} /><label htmlFor="password">Password</label><input id="password" name="password" type="password" autoComplete="current-password" required disabled={isSubmitting} />{error && <p className="form-error" role="alert">{error}</p>}<button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Logging in…' : 'Log in'}</button></form></section></main>
+}
+
+function HomeView({ status, onLogin, onRetry }: { status: ConnectionStatus; onLogin: () => void; onRetry: () => void }) {
+  return <div className="home-page"><header className="home-nav"><span className="home-brand">Job Comparer</span><button type="button" className="home-login" onClick={onLogin}>Log in</button></header><main className="home-content"><p>Compare your saved CV with job descriptions.</p>{status === 'unavailable' && <section className="connection-help" aria-labelledby="connection-heading"><p className="eyebrow" id="connection-heading">Connection needed</p><p>Start the FastAPI server at http://127.0.0.1:8001, then try again.</p><button type="button" onClick={onRetry}>Retry connection</button></section>}</main></div>
 }
 
 function App() {
   const [status, setStatus] = useState<ConnectionStatus>('checking')
   const [checkNumber, setCheckNumber] = useState(0)
-  const [view, setView] = useState<View>('dashboard')
+  const [view, setView] = useState<View>('home')
   const [token, setToken] = useState<string | null>(null)
   const [user, setUser] = useState<CurrentUser | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -38,8 +42,9 @@ function App() {
   async function handleLogin(email: string, password: string) { setError(null); setIsSubmitting(true); try { const nextToken = await signIn(email, password); const nextUser = await getCurrentUser(nextToken); setToken(nextToken); setUser(nextUser); setView('dashboard') } catch (caught) { setError(caught instanceof ApiError ? caught.message : 'Unable to sign in. Please try again.') } finally { setIsSubmitting(false) } }
   function retry() { setStatus('checking'); setCheckNumber((current) => current + 1) }
   function openLogin() { setError(null); setView('login') }
-  function logout() { setToken(null); setUser(null) }
-  if (view === 'login') return <LoginView onBack={() => setView('dashboard')} onLogin={handleLogin} error={error} isSubmitting={isSubmitting} />
+  function logout() { setToken(null); setUser(null); setView('home') }
+  if (view === 'login') return <LoginView onBack={() => setView('home')} onLogin={handleLogin} error={error} isSubmitting={isSubmitting} />
+  if (view === 'home') return <HomeView status={status} onLogin={openLogin} onRetry={retry} />
   return <div className="app-shell"><aside className="sidebar" aria-label="Primary navigation"><div className="brand"><span>Job Comparer</span></div><nav className="navigation" aria-label="Workspace"><p className="nav-label">Workspace</p><ul><li className="nav-item nav-item--current" aria-current="page"><Icon name="grid" />Dashboard</li><li className="nav-item"><Icon name="briefcase" />Jobs</li><li className="nav-item"><Icon name="document" />My CV</li><li className="nav-item"><Icon name="arrows" />Comparisons</li></ul><p className="nav-label nav-label--lower">Account</p><ul>{user && token ? <li><button type="button" className="nav-button" onClick={logout}>Log out</button></li> : <li><button type="button" className="nav-button" onClick={openLogin}><Icon name="login" />Log in</button></li>}</ul></nav>{user && <p className="account-email">{user.email}</p>}<HealthStatus status={status} /></aside><main className="main-content"><div className="page-heading"><p className="eyebrow">Workspace</p><h1>Dashboard</h1><p>Compare your CV with key aspects of job descriptions.</p></div>{status === 'unavailable' && <section className="connection-help" aria-labelledby="connection-heading"><p className="eyebrow" id="connection-heading">Connection needed</p><p>Start the FastAPI server at http://127.0.0.1:8001, then try again.</p><button type="button" onClick={retry}>Retry connection</button></section>}</main></div>
 }
 export default App
