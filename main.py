@@ -47,7 +47,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:5173"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
 )
 bearer = HTTPBearer(auto_error=False)
 MAX_CV_LENGTH = 50_000
