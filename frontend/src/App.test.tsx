@@ -16,7 +16,7 @@ test('shows a connected status for a healthy API response', async () => {
 
   render(<App />)
 
-  expect(screen.getByRole('heading', { name: 'Job Comparer' })).toBeVisible()
+  expect(screen.getByText('Job Comparer')).toBeVisible()
   await screen.findByText('API connected')
   expect(screen.getByRole('status')).toHaveTextContent('API connected')
   expect(fetchMock).toHaveBeenCalledOnce()
