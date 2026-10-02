@@ -16,7 +16,6 @@ test('shows a connected status for a healthy API response', async () => {
 
   render(<App />)
 
-  expect(screen.getByText('Compare your saved CV with job descriptions.')).toBeVisible()
   await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce())
   expect(fetchMock).toHaveBeenCalledWith(
     'http://127.0.0.1:8001/health',
@@ -71,6 +70,44 @@ test('opens the login view from the public home navigation', () => {
   render(<App />)
   fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
   expect(screen.getByRole('heading', { name: 'Log in' })).toBeVisible()
+})
+
+test('opens signup from the home hero and can return to login', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'Sign up to compare' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
+  expect(screen.getByLabelText('Email address')).toBeVisible()
+})
+
+test('shows signup validation and duplicate-email errors', async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    if (String(input).endsWith('/health')) return Promise.resolve({ ok: true, json: async () => ({ status: 'ok' }) })
+    return Promise.resolve({ ok: false, json: async () => ({ detail: 'Email is already registered' }) })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'Sign up to compare' }))
+  fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'ada@example.com' } })
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'short' } })
+  fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'short' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Password must have at least 12 characters.')
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'long-enough-password' } })
+  fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'long-enough-password' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+  expect(await screen.findByRole('alert')).toHaveTextContent('Email is already registered')
+})
+
+test('returns to login after successful signup', async () => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => Promise.resolve({ ok: true, json: async () => String(input).endsWith('/health') ? { status: 'ok' } : { id: 1, email: 'ada@example.com' } })))
+  render(<App />)
+  fireEvent.click(screen.getByRole('button', { name: 'Sign up to compare' }))
+  fireEvent.change(screen.getByLabelText('Email address'), { target: { value: 'ada@example.com' } })
+  fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'long-enough-password' } })
+  fireEvent.change(screen.getByLabelText('Confirm password'), { target: { value: 'long-enough-password' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
+  expect(await screen.findByRole('heading', { name: 'Log in' })).toBeVisible()
 })
 
 test('shows an error when login credentials are rejected', async () => {

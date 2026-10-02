@@ -20,6 +20,11 @@ export async function signIn(email: string, password: string): Promise<string> {
   return body.access_token
 }
 
+export async function signUp(email: string, password: string): Promise<void> {
+  const response = await fetch(`${API_URL}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+}
+
 export async function getCurrentUser(token: string): Promise<CurrentUser> {
   const response = await fetch(`${API_URL}/me`, { headers: { Authorization: `Bearer ${token}` } })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
