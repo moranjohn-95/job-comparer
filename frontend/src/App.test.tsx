@@ -72,6 +72,37 @@ test('opens the login view from the public home navigation', () => {
   expect(screen.getByRole('heading', { name: 'Log in' })).toBeVisible()
 })
 
+test('shows a selected PDF filename locally', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+
+  const file = new File(['cv'], 'ada-lovelace.pdf', { type: 'application/pdf' })
+  fireEvent.change(screen.getByLabelText('Choose a file'), { target: { files: [file] } })
+
+  expect(screen.getByRole('status')).toHaveTextContent('Selected: ada-lovelace.pdf')
+})
+
+test('rejects an invalid CV file locally', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+
+  const file = new File(['cv'], 'notes.txt', { type: 'text/plain' })
+  fireEvent.change(screen.getByLabelText('Choose a file'), { target: { files: [file] } })
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Choose a PDF or DOCX file.')
+})
+
+test('shows locally pasted CV text state', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+
+  fireEvent.change(screen.getByLabelText('Paste your CV text'), {
+    target: { value: 'Experienced software engineer.' },
+  })
+
+  expect(screen.getByRole('status')).toHaveTextContent('CV text added locally.')
+})
+
 test('opens signup from the home hero and can return to login', () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
   render(<App />)
