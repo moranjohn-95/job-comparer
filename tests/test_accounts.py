@@ -127,11 +127,15 @@ def test_login_email_limit_uses_normalized_email_and_returns_generic_429(
 def test_login_limit_resets_in_a_new_window(
     client: TestClient, email: str
 ) -> None:
-    old_window = datetime.now(timezone.utc) - LOGIN_WINDOW - timedelta(minutes=1)
+    old_window = (
+        datetime.now(timezone.utc) - LOGIN_WINDOW - timedelta(minutes=1)
+    )
     with Session(get_engine()) as session:
         session.add(
             AuthRateLimitCounter(
-                counter_key=f"{login_email_scope(email)}:{old_window.isoformat()}",
+                counter_key=(
+                    f"{login_email_scope(email)}:{old_window.isoformat()}"
+                ),
                 attempt_count=LOGIN_EMAIL_ATTEMPT_LIMIT,
             )
         )
@@ -170,7 +174,9 @@ def test_changing_email_does_not_bypass_login_ip_limit() -> None:
 def test_changing_ip_does_not_bypass_login_email_limit() -> None:
     email = f"email-limit-{uuid4().hex}@example.com"
     for index in range(LOGIN_EMAIL_ATTEMPT_LIMIT):
-        with TestClient(app, client=(f"198.51.100.{index + 20}", 50000)) as client:
+        with TestClient(
+            app, client=(f"198.51.100.{index + 20}", 50000)
+        ) as client:
             response = client.post(
                 "/login", json={"email": email, "password": "wrong-password"}
             )

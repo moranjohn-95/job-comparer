@@ -23,7 +23,9 @@ class AuthRateLimitReached(Exception):
 def _window_start(now: datetime, window: timedelta) -> datetime:
     seconds = int(window.total_seconds())
     timestamp = int(now.timestamp())
-    return datetime.fromtimestamp(timestamp - timestamp % seconds, tz=now.tzinfo)
+    return datetime.fromtimestamp(
+        timestamp - timestamp % seconds, tz=now.tzinfo
+    )
 
 
 def _counter_key(scope: str, window_start: datetime) -> str:
