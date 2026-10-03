@@ -27,6 +27,13 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class AuthRateLimitCounter(Base):
+    __tablename__ = "auth_rate_limit_counters"
+
+    counter_key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    attempt_count: Mapped[int] = mapped_column(nullable=False)
+
+
 class SavedCV(Base):
     __tablename__ = "cvs"
 

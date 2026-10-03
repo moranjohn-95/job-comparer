@@ -1,3 +1,5 @@
+import ipaddress
+import os
 from datetime import datetime
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -9,6 +11,7 @@ from fastapi import (
     FastAPI,
     File,
     HTTPException,
+    Request,
     Response,
     UploadFile,
     status,
@@ -28,6 +31,19 @@ from auth import (
     verify_password,
 )
 from ai_usage import UsageLimitReached, reserve_attempt
+from auth_rate_limit import (
+    LOGIN_EMAIL_ATTEMPT_LIMIT,
+    LOGIN_IP_ATTEMPT_LIMIT,
+    LOGIN_WINDOW,
+    SIGNUP_ATTEMPT_LIMIT,
+    SIGNUP_WINDOW,
+    AuthRateLimitReached,
+    login_email_scope,
+    login_ip_scope,
+    reserve_auth_attempt,
+    reserve_auth_attempts,
+    signup_scope,
+)
 from comparison import (
     ComparisonDisabled,
     ComparisonInputTooLong,
@@ -163,6 +179,41 @@ def invalid_credentials() -> HTTPException:
     )
 
 
+def rate_limited() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail="Too many authentication attempts. Please try again later.",
+    )
+
+
+def trusted_proxy_ips() -> set[str]:
+    values = os.getenv("TRUSTED_PROXY_IPS", "").split(",")
+    proxies = set()
+    for value in values:
+        value = value.strip()
+        if value:
+            proxies.add(str(ipaddress.ip_address(value)))
+    return proxies
+
+
+def client_ip(request: Request) -> str:
+    peer = request.client.host if request.client is not None else "unknown"
+    try:
+        peer = str(ipaddress.ip_address(peer))
+    except ValueError:
+        return peer
+    if peer not in trusted_proxy_ips():
+        return peer
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if not forwarded_for:
+        return peer
+    forwarded = forwarded_for.split(",", 1)[0].strip()
+    try:
+        return str(ipaddress.ip_address(forwarded))
+    except ValueError:
+        return peer
+
+
 def current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: Session = Depends(get_session),
@@ -200,8 +251,19 @@ def health() -> dict[str, str]:
     "/signup", response_model=UserPublic, status_code=status.HTTP_201_CREATED
 )
 def signup(
-    payload: SignupRequest, session: Session = Depends(get_session)
+    payload: SignupRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> User:
+    try:
+        reserve_auth_attempt(
+            session,
+            signup_scope(client_ip(request)),
+            SIGNUP_ATTEMPT_LIMIT,
+            SIGNUP_WINDOW,
+        )
+    except AuthRateLimitReached:
+        raise rate_limited() from None
     email = normalized_email(payload.email)
     if session.scalar(select(User).where(User.email == email)) is not None:
         raise HTTPException(
@@ -222,8 +284,28 @@ def signup(
 
 @app.post("/login", response_model=TokenResponse)
 def login(
-    payload: LoginRequest, session: Session = Depends(get_session)
+    payload: LoginRequest,
+    request: Request,
+    session: Session = Depends(get_session),
 ) -> TokenResponse:
+    try:
+        reserve_auth_attempts(
+            session,
+            (
+                (
+                    login_ip_scope(client_ip(request)),
+                    LOGIN_IP_ATTEMPT_LIMIT,
+                    LOGIN_WINDOW,
+                ),
+                (
+                    login_email_scope(normalized_email(payload.email)),
+                    LOGIN_EMAIL_ATTEMPT_LIMIT,
+                    LOGIN_WINDOW,
+                ),
+            ),
+        )
+    except AuthRateLimitReached:
+        raise rate_limited() from None
     user = session.scalar(
         select(User).where(User.email == normalized_email(payload.email))
     )
