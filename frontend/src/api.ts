@@ -4,6 +4,19 @@ const API_URL = 'http://127.0.0.1:8001'
 
 export type CurrentUser = { id: number; email: string }
 export type SavedJob = { id: number; title: string; company_name: string }
+export type ComparisonResult = {
+  matched_requirements: Array<{
+    requirement: string
+    job_evidence: string
+    cv_evidence: string
+  }>
+  possible_gaps: Array<{
+    requirement: string
+    job_evidence: string
+    status: 'not_found_in_cv'
+  }>
+  interpretation: string
+}
 
 export class ApiError extends Error {}
 
@@ -87,6 +100,29 @@ export async function createJob(
     title: savedJob.title,
     company_name: savedJob.company_name,
   }
+}
+
+export async function compareJob(
+  token: string,
+  jobId: number,
+): Promise<ComparisonResult> {
+  const response = await fetch(`${API_URL}/jobs/${jobId}/compare`, {
+    method: 'POST',
+    headers: authorization(token),
+  })
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  const result = body as Record<string, unknown> | null
+  if (
+    typeof body !== 'object' ||
+    body === null ||
+    !Array.isArray(result?.matched_requirements) ||
+    !Array.isArray(result.possible_gaps) ||
+    typeof result.interpretation !== 'string'
+  ) {
+    throw new ApiError('The comparison returned an invalid result.')
+  }
+  return body as ComparisonResult
 }
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {

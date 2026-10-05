@@ -10,6 +10,7 @@ import {
 import {
   ApiError,
   checkHealth,
+  compareJob,
   createJob,
   getCurrentUser,
   signIn,
@@ -17,6 +18,7 @@ import {
   saveCvText,
   uploadCv,
   type CurrentUser,
+  type ComparisonResult,
   type SavedJob,
 } from "./api";
 import "./App.css";
@@ -530,7 +532,11 @@ function App() {
   const [saveStage, setSaveStage] = useState<SaveStage>("cv");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedJob, setSavedJob] = useState<SavedJob | null>(null);
+  const [comparison, setComparison] = useState<ComparisonResult | null>(null);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [isComparing, setIsComparing] = useState(false);
   const isPersistingRef = useRef(false);
+  const isComparingRef = useRef(false);
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -610,6 +616,24 @@ function App() {
       void saveAuthenticatedDraft(token);
     }
   }
+  async function runComparison() {
+    if (!token || !savedJob || isComparingRef.current) return;
+    isComparingRef.current = true;
+    setIsComparing(true);
+    setComparisonError(null);
+    try {
+      setComparison(await compareJob(token, savedJob.id));
+    } catch (caught) {
+      setComparisonError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Unable to compare this job right now. Please try again later.",
+      );
+    } finally {
+      isComparingRef.current = false;
+      setIsComparing(false);
+    }
+  }
   async function handleSignup(
     email: string,
     password: string,
@@ -658,6 +682,8 @@ function App() {
       setSaveStage("cv");
       setSaveError(null);
       setSavedJob(null);
+      setComparison(null);
+      setComparisonError(null);
       setError(null);
       setView("signup");
     }
@@ -810,11 +836,47 @@ function App() {
           </section>
         )}
         {savedJob && (
-          <section className="save-confirmation" role="status">
+          <section className="save-confirmation">
             <h2>Job saved</h2>
             <p>
               {savedJob.title} at {savedJob.company_name} has been saved.
             </p>
+            <button
+              type="button"
+              onClick={runComparison}
+              disabled={isComparing}
+            >
+              {isComparing ? "Comparing…" : "Compare"}
+            </button>
+            {isComparing && <p role="status">Comparing your CV and job…</p>}
+            {comparisonError && (
+              <p role="alert">Comparison unavailable: {comparisonError}</p>
+            )}
+            {comparison && (
+              <section aria-labelledby="comparison-heading">
+                <h2 id="comparison-heading">Comparison results</h2>
+                <h3>Matched requirements</h3>
+                <ul>
+                  {comparison.matched_requirements.map((match) => (
+                    <li key={`${match.requirement}-${match.cv_evidence}`}>
+                      <strong>{match.requirement}</strong>
+                      <p>CV evidence: {match.cv_evidence}</p>
+                      <p>Job evidence: {match.job_evidence}</p>
+                    </li>
+                  ))}
+                </ul>
+                <h3>Possible gaps</h3>
+                <ul>
+                  {comparison.possible_gaps.map((gap) => (
+                    <li key={`${gap.requirement}-${gap.job_evidence}`}>
+                      <strong>{gap.requirement}</strong>
+                      <p>Job evidence: {gap.job_evidence}</p>
+                    </li>
+                  ))}
+                </ul>
+                <p>{comparison.interpretation}</p>
+              </section>
+            )}
           </section>
         )}
       </main>

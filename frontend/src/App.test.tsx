@@ -566,3 +566,120 @@ test("retries a failed job save without uploading the CV again", async () => {
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
   expect(jobAttempts).toBe(2);
 });
+
+const comparisonResult = {
+  matched_requirements: [
+    {
+      requirement: "TypeScript",
+      cv_evidence: "Built TypeScript web applications.",
+      job_evidence: "Experience with TypeScript is required.",
+    },
+  ],
+  possible_gaps: [
+    {
+      requirement: "Kubernetes",
+      job_evidence: "Operate services on Kubernetes.",
+      status: "not_found_in_cv",
+    },
+  ],
+  interpretation:
+    "A possible gap means evidence was not found in the saved CV; it does not establish that the person lacks the skill.",
+};
+
+function savedDraftResponse(url: string) {
+  if (url.endsWith("/health")) {
+    return { ok: true, json: async () => ({ status: "ok" }) };
+  }
+  if (url.endsWith("/login")) {
+    return { ok: true, json: async () => ({ access_token: "token" }) };
+  }
+  if (url.endsWith("/me")) {
+    return { ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) };
+  }
+  if (url.endsWith("/cv")) {
+    return { ok: true, json: async () => ({ text: "Ada CV" }) };
+  }
+  return {
+    ok: true,
+    json: async () => ({
+      id: 7,
+      title: "Software Engineer",
+      company_name: "Analytical Engines",
+    }),
+  };
+}
+
+async function saveTextDraftAndLogIn() {
+  completeTextDraft();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByText("Job saved");
+}
+
+test("shows evidence-based comparison results only after Compare is clicked", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/jobs/7/compare")) {
+      expect(init).toMatchObject({
+        method: "POST",
+        headers: { Authorization: "Bearer token" },
+      });
+      return Promise.resolve({ ok: true, json: async () => comparisonResult });
+    }
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await saveTextDraftAndLogIn();
+  expect(screen.queryByText("Comparison results")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByText("Comparison results")).toBeVisible();
+  expect(screen.getByText("CV evidence: Built TypeScript web applications.")).toBeVisible();
+  expect(screen.getByText("Job evidence: Operate services on Kubernetes.")).toBeVisible();
+  expect(screen.getByText(comparisonResult.interpretation)).toBeVisible();
+});
+
+test("disables Compare while a comparison request is running", async () => {
+  let resolveComparison: ((value: Response) => void) | undefined;
+  const comparisonRequest = new Promise<Response>((resolve) => {
+    resolveComparison = resolve;
+  });
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/jobs/7/compare")) return comparisonRequest;
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await saveTextDraftAndLogIn();
+  const button = screen.getByRole("button", { name: "Compare" });
+  fireEvent.click(button);
+  fireEvent.click(button);
+  expect(await screen.findByText("Comparing your CV and job…")).toBeVisible();
+  expect(button).toBeDisabled();
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("compare"))).toHaveLength(1);
+  resolveComparison?.({ ok: true, json: async () => comparisonResult } as Response);
+  expect(await screen.findByText("Comparison results")).toBeVisible();
+});
+
+test("shows comparison API errors without retrying or saving another draft", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/jobs/7/compare")) {
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({ detail: "AI comparisons are disabled" }),
+      });
+    }
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await saveTextDraftAndLogIn();
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent(
+    "Comparison unavailable: AI comparisons are disabled",
+  );
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/jobs"))).toHaveLength(1);
+});
