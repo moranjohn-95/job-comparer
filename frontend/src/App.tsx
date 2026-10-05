@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useRef,
   useState,
   type ChangeEvent,
   type DragEvent,
@@ -9,16 +10,21 @@ import {
 import {
   ApiError,
   checkHealth,
+  createJob,
   getCurrentUser,
   signIn,
   signUp,
+  saveCvText,
+  uploadCv,
   type CurrentUser,
+  type SavedJob,
 } from "./api";
 import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 type View = "home" | "dashboard" | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
+type SaveStage = "cv" | "job" | "complete";
 type IconName = "grid" | "briefcase" | "document" | "arrows" | "login";
 type DraftProps = {
   cvFile: File | null;
@@ -521,6 +527,10 @@ function App() {
     useState<CvInputMethod>(null);
   const [draftErrors, setDraftErrors] = useState<string[]>([]);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [saveStage, setSaveStage] = useState<SaveStage>("cv");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedJob, setSavedJob] = useState<SavedJob | null>(null);
+  const isPersistingRef = useRef(false);
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -540,7 +550,11 @@ function App() {
       const nextUser = await getCurrentUser(nextToken);
       setToken(nextToken);
       setUser(nextUser);
-      setView("dashboard");
+      if (isSavingDraft) {
+        await saveAuthenticatedDraft(nextToken);
+      } else {
+        setView("dashboard");
+      }
     } catch (caught) {
       setError(
         caught instanceof ApiError
@@ -549,6 +563,51 @@ function App() {
       );
     } finally {
       setIsSubmitting(false);
+    }
+  }
+  async function saveAuthenticatedDraft(authToken: string) {
+    if (isPersistingRef.current) return;
+    isPersistingRef.current = true;
+    setIsSavingDraft(true);
+    setSaveError(null);
+    setView("dashboard");
+    try {
+      if (saveStage === "cv") {
+        if (cvFile && selectedInputMethod !== "text") {
+          await uploadCv(authToken, cvFile);
+        } else {
+          await saveCvText(authToken, cvText.trim());
+        }
+        setSaveStage("job");
+      }
+      const job = await createJob(authToken, {
+        title: jobTitle.trim(),
+        company_name: companyName.trim(),
+        description: jobDescription.trim(),
+      });
+      setSavedJob(job);
+      setSaveStage("complete");
+      setCvFile(null);
+      setCvText("");
+      setJobTitle("");
+      setCompanyName("");
+      setJobDescription("");
+      setSelectedInputMethod(null);
+      setDraftErrors([]);
+    } catch (caught) {
+      setSaveError(
+        caught instanceof ApiError
+          ? caught.message
+          : "Unable to save your draft. Please try again.",
+      );
+    } finally {
+      isPersistingRef.current = false;
+      setIsSavingDraft(false);
+    }
+  }
+  function retrySave() {
+    if (token && saveStage !== "complete") {
+      void saveAuthenticatedDraft(token);
     }
   }
   async function handleSignup(
@@ -596,6 +655,9 @@ function App() {
     setDraftErrors(errors);
     if (errors.length === 0) {
       setIsSavingDraft(true);
+      setSaveStage("cv");
+      setSaveError(null);
+      setSavedJob(null);
       setError(null);
       setView("signup");
     }
@@ -732,6 +794,29 @@ function App() {
           <h1>Dashboard</h1>
           <p>Compare your CV with key aspects of job descriptions.</p>
         </div>
+        {isSavingDraft && (
+          <p role="status">
+            {saveStage === "cv"
+              ? "Saving your CV…"
+              : "Saving your job details…"}
+          </p>
+        )}
+        {saveError && (
+          <section className="draft-errors" role="alert">
+            <p>We could not save your draft: {saveError}</p>
+            <button type="button" onClick={retrySave}>
+              Retry save
+            </button>
+          </section>
+        )}
+        {savedJob && (
+          <section className="save-confirmation" role="status">
+            <h2>Job saved</h2>
+            <p>
+              {savedJob.title} at {savedJob.company_name} has been saved.
+            </p>
+          </section>
+        )}
       </main>
     </div>
   );

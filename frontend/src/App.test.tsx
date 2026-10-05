@@ -457,3 +457,112 @@ test("logs out and restores the sidebar login action", async () => {
   expect(screen.getByRole("button", { name: "Log in" })).toBeVisible();
   expect(screen.queryByText("ada@example.com")).not.toBeInTheDocument();
 });
+
+function completeTextDraft() {
+  fireEvent.change(screen.getByLabelText("Paste your CV text"), {
+    target: { value: "Ada CV" },
+  });
+  fireEvent.change(screen.getByLabelText("Job title"), {
+    target: { value: "Software Engineer" },
+  });
+  fireEvent.change(screen.getByLabelText("Company name"), {
+    target: { value: "Analytical Engines" },
+  });
+  fireEvent.change(screen.getByLabelText("Job description"), {
+    target: { value: "Build software." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+}
+
+function enterLogin() {
+  fireEvent.change(screen.getByLabelText("Email address"), {
+    target: { value: "ada@example.com" },
+  });
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: "long-enough-password" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+}
+
+test("saves a valid text draft after login, without comparing it", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/health")) {
+      return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
+    }
+    if (url.endsWith("/login")) {
+      return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+    }
+    if (url.endsWith("/me")) {
+      return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
+    }
+    if (url.endsWith("/cv")) {
+      expect(init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ Authorization: "Bearer token" }) });
+      return Promise.resolve({ ok: true, json: async () => ({ text: "Ada CV" }) });
+    }
+    expect(url).toMatch(/\/jobs$/);
+    expect(init).toMatchObject({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer token" }) });
+    return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Software Engineer", company_name: "Analytical Engines" }) });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  completeTextDraft();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  expect(await screen.findByText("Job saved")).toBeVisible();
+  expect(screen.getByText(/Software Engineer at Analytical Engines/)).toBeVisible();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).includes("compare"))).toBe(false);
+});
+
+test("uploads a selected CV file before saving the job", async () => {
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    calls.push(url);
+    if (url.endsWith("/health")) return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
+    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+    if (url.endsWith("/me")) return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
+    if (url.endsWith("/cv/upload")) {
+      expect(init?.body).toBeInstanceOf(FormData);
+      return Promise.resolve({ ok: true, json: async () => ({ text: "Ada CV" }) });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Engineer", company_name: "Engines" }) });
+  }));
+  render(<App />);
+  fireEvent.change(screen.getByLabelText("Choose a file"), {
+    target: { files: [new File(["cv"], "ada.pdf", { type: "application/pdf" })] },
+  });
+  fireEvent.change(screen.getByLabelText("Job title"), { target: { value: "Engineer" } });
+  fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Engines" } });
+  fireEvent.change(screen.getByLabelText("Job description"), { target: { value: "Build." } });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByText("Job saved");
+  expect(calls.findIndex((url) => url.endsWith("/cv/upload"))).toBeLessThan(
+    calls.findIndex((url) => url.endsWith("/jobs")),
+  );
+});
+
+test("retries a failed job save without uploading the CV again", async () => {
+  let jobAttempts = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.endsWith("/health")) return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
+    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+    if (url.endsWith("/me") || url.endsWith("/cv")) return Promise.resolve({ ok: true, json: async () => url.endsWith("/me") ? ({ id: 1, email: "ada@example.com" }) : ({ text: "Ada CV" }) });
+    jobAttempts += 1;
+    if (jobAttempts === 1) return Promise.resolve({ ok: false, json: async () => ({ detail: "Job save failed" }) });
+    return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Software Engineer", company_name: "Analytical Engines" }) });
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  completeTextDraft();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  expect(await screen.findByRole("alert")).toHaveTextContent("Job save failed");
+  fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+  await screen.findByText("Job saved");
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
+  expect(jobAttempts).toBe(2);
+});
