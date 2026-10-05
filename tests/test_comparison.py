@@ -12,7 +12,13 @@ from sqlalchemy.orm import Session
 
 from database import get_engine
 from main import app
-from ai_usage import APP_DAILY_LIMIT, APP_MONTHLY_LIMIT, LOCK_KEY
+from ai_usage import (
+    APP_DAILY_LIMIT,
+    APP_MONTHLY_LIMIT,
+    LOCK_KEY,
+    UsageConfigurationError,
+    get_app_limits,
+)
 from comparison import (
     MAX_CV_BYTES,
     MAX_CV_CHARS,
@@ -20,6 +26,7 @@ from comparison import (
     MAX_JOB_CHARS,
     MAX_OUTPUT_TOKENS,
     _post_once,
+    source_excerpts,
 )
 from models import AIUsageCounter, ComparisonHistory, SavedCV, User
 
@@ -35,17 +42,29 @@ PROVIDER_RESULT = {
     "matched_requirements": [
         {
             "requirement": "Python APIs",
-            "job_evidence": "Build Python APIs",
-            "cv_evidence": "Built Python APIs",
+            "job_evidence": "Build Python APIs. ",
+            "cv_evidence": CV_TEXT,
         }
     ],
     "possible_gaps": [
         {
             "requirement": "Kubernetes",
-            "job_evidence": "Deploy services with Kubernetes",
+            "job_evidence": "Deploy services with Kubernetes.",
             "status": "not_found_in_cv",
         }
     ],
+}
+PROVIDER_REFERENCES = {
+    "matched_requirements": [{
+        "requirement": "Python APIs",
+        "job_evidence_id": "job_0001",
+        "cv_evidence_id": "cv_0001",
+    }],
+    "possible_gaps": [{
+        "requirement": "Kubernetes",
+        "job_evidence_id": "job_0002",
+        "status": "not_found_in_cv",
+    }],
 }
 
 
@@ -55,6 +74,8 @@ def reset_ai_usage(
     migrated_test_database: None,
 ) -> Iterator[None]:
     monkeypatch.setenv("AI_COMPARISON_ENABLED", "true")
+    monkeypatch.delenv("AI_APP_DAILY_LIMIT", raising=False)
+    monkeypatch.delenv("AI_APP_MONTHLY_LIMIT", raising=False)
     with Session(get_engine()) as session:
         session.execute(
             delete(AIUsageCounter).where(
@@ -143,7 +164,7 @@ def mock_success(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
 
     def fake_post(*_: object, **kwargs: object) -> httpx.Response:
         calls.append(kwargs["json"])
-        return provider_response(PROVIDER_RESULT)
+        return provider_response(PROVIDER_REFERENCES)
 
     monkeypatch.setattr("comparison._post_once", fake_post)
     return calls
@@ -174,7 +195,7 @@ def test_comparison_returns_grounded_result_and_sends_only_owned_text(
         url: str, *, headers: dict, json: dict, timeout: float
     ) -> httpx.Response:
         seen.append((url, headers, json, timeout))
-        return provider_response(PROVIDER_RESULT)
+        return provider_response(PROVIDER_REFERENCES)
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -203,8 +224,8 @@ def test_comparison_returns_grounded_result_and_sends_only_owned_text(
     assert payload["max_output_tokens"] == MAX_OUTPUT_TOKENS
     assert payload["text"]["format"]["strict"] is True
     assert json.loads(payload["input"][1]["content"]) == {
-        "cv_text": CV_TEXT,
-        "job_description": JOB_DESCRIPTION,
+        "cv_excerpts": source_excerpts(CV_TEXT, "cv"),
+        "job_excerpts": source_excerpts(JOB_DESCRIPTION, "job"),
     }
     assert timeout == 30.0
 
@@ -267,12 +288,13 @@ def test_unauthenticated_comparison_is_rejected(
 @pytest.mark.parametrize(
     "bad_result",
     [
-        {**PROVIDER_RESULT, "score": 95},
+        {**PROVIDER_REFERENCES, "score": 95},
+        PROVIDER_RESULT,
         {
             "matched_requirements": [
                 {
-                    **PROVIDER_RESULT["matched_requirements"][0],
-                    "cv_evidence": "Invented experience",
+                    **PROVIDER_REFERENCES["matched_requirements"][0],
+                    "cv_evidence_id": "cv_9999",
                 }
             ],
             "possible_gaps": [],
@@ -281,7 +303,7 @@ def test_unauthenticated_comparison_is_rejected(
             "matched_requirements": [],
             "possible_gaps": [
                 {
-                    **PROVIDER_RESULT["possible_gaps"][0],
+                    **PROVIDER_REFERENCES["possible_gaps"][0],
                     "status": "lacks_skill",
                 }
             ],
@@ -289,7 +311,10 @@ def test_unauthenticated_comparison_is_rejected(
         {
             "matched_requirements": [],
             "possible_gaps": [
-                {**PROVIDER_RESULT["possible_gaps"][0], "requirement": "  "}
+                {
+                    **PROVIDER_REFERENCES["possible_gaps"][0],
+                    "requirement": "  ",
+                }
             ],
         },
     ],
@@ -299,6 +324,7 @@ def test_malformed_provider_output_has_generic_error(
     create_user: Callable[[], dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,
     bad_result: dict,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     headers = create_user()
     job_id = prepare(client, headers)
@@ -315,6 +341,11 @@ def test_malformed_provider_output_has_generic_error(
         "detail": "AI provider returned an invalid comparison"
     }
     assert CV_TEXT not in response.text
+    assert "comparison_invalid_output" in caplog.text
+    assert "category" not in response.json()
+    assert "field" not in response.json()
+    assert CV_TEXT not in caplog.text
+    assert JOB_DESCRIPTION not in caplog.text
 
 
 def test_provider_failure_does_not_expose_cv_or_provider_error(
@@ -581,6 +612,90 @@ def test_account_daily_limit_counts_attempts(
     ) == 3
 
 
+def test_app_limit_settings_default_and_local_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert get_app_limits() == (APP_DAILY_LIMIT, APP_MONTHLY_LIMIT)
+    monkeypatch.setenv("AI_APP_DAILY_LIMIT", "50")
+    monkeypatch.setenv("AI_APP_MONTHLY_LIMIT", "100")
+    assert get_app_limits() == (50, 100)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("AI_APP_DAILY_LIMIT", "0"),
+        ("AI_APP_DAILY_LIMIT", "-1"),
+        ("AI_APP_DAILY_LIMIT", "not-a-number"),
+        ("AI_APP_MONTHLY_LIMIT", "0"),
+    ],
+)
+def test_invalid_limit_setting_is_rejected_without_reservation(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    headers = create_user()
+    job_id = prepare(client, headers)
+    calls = mock_success(monkeypatch)
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(UsageConfigurationError):
+        get_app_limits()
+    response = client.post(f"/jobs/{job_id}/compare", headers=headers)
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "AI comparison limits are invalid"}
+    assert calls == []
+    with Session(get_engine()) as session:
+        assert session.query(AIUsageCounter).count() == 1
+
+
+@pytest.mark.parametrize(
+    "period,env_name,limit,detail",
+    [
+        (
+            "day", "AI_APP_DAILY_LIMIT", 50,
+            "Daily app comparison limit reached (50)",
+        ),
+        (
+            "month", "AI_APP_MONTHLY_LIMIT", 100,
+            "Monthly app comparison limit reached (100)",
+        ),
+    ],
+)
+def test_app_limit_override_uses_existing_counters(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    period: str,
+    env_name: str,
+    limit: int,
+    detail: str,
+) -> None:
+    day, month = current_periods()
+    key = f"app:{period}:{day if period == 'day' else month}"
+    seed_counter(key, limit - 1)
+    first = create_user()
+    second = create_user()
+    first_job = prepare(client, first)
+    second_job = prepare(client, second)
+    calls = mock_success(monkeypatch)
+    monkeypatch.setenv(env_name, str(limit))
+
+    accepted = client.post(f"/jobs/{first_job}/compare", headers=first)
+    rejected = client.post(f"/jobs/{second_job}/compare", headers=second)
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 429
+    assert rejected.json() == {"detail": detail}
+    assert len(calls) == 1
+    with Session(get_engine()) as session:
+        assert session.get(AIUsageCounter, key).call_count == limit
+
+
 def test_app_daily_limit_applies_across_accounts(
     client: TestClient,
     create_user: Callable[[], dict[str, str]],
@@ -759,8 +874,7 @@ def test_successful_result_persists_as_private_history(
         ).revision
         assert "cv_text" not in entry.result
         assert "job_description" not in entry.result
-        assert CV_TEXT not in str(entry.result)
-        assert JOB_DESCRIPTION not in str(entry.result)
+        assert entry.result == comparison.json()
 
 
 def test_history_list_and_view_enforce_job_and_comparison_ownership(
@@ -925,7 +1039,7 @@ def test_cv_replacement_during_provider_call_marks_result_outdated(
                 headers=headers,
             )
             assert changed.status_code == 200
-        return provider_response(PROVIDER_RESULT)
+        return provider_response(PROVIDER_REFERENCES)
 
     monkeypatch.setattr("comparison._post_once", replace_cv)
 

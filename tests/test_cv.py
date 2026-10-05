@@ -1,14 +1,17 @@
+import json
 from collections.abc import Callable, Iterator
 from io import BytesIO
 from uuid import uuid4
 
+import httpx
 import pytest
 from docx import Document
 from fastapi.testclient import TestClient
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from comparison import MAX_CV_CHARS, source_excerpts
 from cv_upload import MAX_UPLOAD_BYTES
 from database import get_engine
 from main import MAX_CV_LENGTH, app
@@ -317,6 +320,100 @@ def test_docx_upload_extracts_paragraphs_and_tables(
     assert response.status_code == 200
     assert response.json() == {"text": "DOCX resume text\nPython\tPostgreSQL"}
     assert client.get("/cv", headers=headers).json() == response.json()
+
+
+@pytest.mark.parametrize("source", ["text", "pdf", "docx"])
+def test_all_cv_sections_reach_provider_without_truncation(
+    client: TestClient,
+    create_user: Callable[[], tuple[int, dict[str, str]]],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    source: str,
+) -> None:
+    user_id, headers = create_user()
+    sections = [
+        "Work experience: Built internal reporting tools.",
+        "Education: Diploma in software development.",
+        "Technical skills: Python, SQL, scikit-learn.",
+        "Training: Completed a practical statistics course.",
+        "Projects: Trained a machine-learning random forest classifier.",
+    ]
+    cv_text = "\n".join(sections)
+    if source == "text":
+        # Keep meaningful evidence at the very end of the accepted input.
+        cv_text = " " * (MAX_CV_CHARS - len(cv_text)) + cv_text
+        saved = client.put("/cv", json={"text": cv_text}, headers=headers)
+    else:
+        output = BytesIO()
+        if source == "pdf":
+            writer = PdfWriter()
+            for section in sections:
+                page = PdfReader(BytesIO(make_pdf(text=section))).pages[0]
+                writer.add_page(page)
+            writer.write(output)
+        else:
+            document = Document()
+            for section in sections[:-1]:
+                document.add_paragraph(section)
+            # Project evidence in the final table must also survive.
+            document.add_table(rows=1, cols=1).cell(0, 0).text = sections[-1]
+            document.save(output)
+        saved = upload(
+            client, headers, f"synthetic.{source}", output.getvalue(),
+        )
+
+    assert saved.status_code == 200
+    assert saved.json()["text"] == cv_text
+    assert client.get("/cv", headers=headers).json()["text"] == cv_text
+    with Session(get_engine()) as session:
+        assert session.get(SavedCV, user_id).text == cv_text
+
+    job_text = "Machine learning AND deep learning experience required."
+    job = client.post(
+        "/jobs", headers=headers,
+        json={
+            "title": "Engineer", "company_name": "Synthetic Company",
+            "description": job_text,
+        },
+    )
+    assert job.status_code == 201
+    monkeypatch.setenv("AI_COMPARISON_ENABLED", "true")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    payloads = []
+
+    def fake_post(*_: object, **kwargs: object) -> httpx.Response:
+        payloads.append(kwargs["json"])
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://example.test"),
+            json={
+                "status": "completed",
+                "output": [{
+                    "type": "message",
+                    "content": [{
+                        "type": "output_text",
+                        "text": json.dumps({
+                            "matched_requirements": [], "possible_gaps": [],
+                        }),
+                    }],
+                }],
+            },
+        )
+
+    monkeypatch.setattr("comparison._post_once", fake_post)
+    response = client.post(
+        f"/jobs/{job.json()['id']}/compare", headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert len(payloads) == 1
+    assert json.loads(payloads[0]["input"][1]["content"]) == {
+        "cv_excerpts": source_excerpts(cv_text, "cv"),
+        "job_excerpts": source_excerpts(job_text, "job"),
+    }
+    for section in sections:
+        assert section not in caplog.text
 
 
 @pytest.mark.parametrize(

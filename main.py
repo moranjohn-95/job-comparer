@@ -30,7 +30,11 @@ from auth import (
     hash_password,
     verify_password,
 )
-from ai_usage import UsageLimitReached, reserve_attempt
+from ai_usage import (
+    UsageConfigurationError,
+    UsageLimitReached,
+    reserve_attempt,
+)
 from auth_rate_limit import (
     LOGIN_EMAIL_ATTEMPT_LIMIT,
     LOGIN_IP_ATTEMPT_LIMIT,
@@ -474,6 +478,10 @@ def compare_job(
 
     try:
         reserve_attempt(session, user_id)
+    except UsageConfigurationError:
+        raise HTTPException(
+            status_code=503, detail="AI comparison limits are invalid"
+        ) from None
     except UsageLimitReached as error:
         raise HTTPException(status_code=429, detail=str(error)) from None
 
