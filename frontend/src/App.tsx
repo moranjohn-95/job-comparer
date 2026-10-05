@@ -44,6 +44,7 @@ function StartWithCV() {
   const [fileName, setFileName] = useState<string | null>(null)
   const [fileError, setFileError] = useState<string | null>(null)
   const [cvText, setCvText] = useState('')
+  const [jobDescription, setJobDescription] = useState('')
 
   function selectFile(file: File | undefined) {
     if (!file) return
@@ -71,11 +72,120 @@ function StartWithCV() {
     selectFile(event.dataTransfer.files[0])
   }
 
-  return <section className="cv-starter" aria-labelledby="cv-starter-heading"><div className="cv-starter__intro"><p className="eyebrow">Your starting point</p><h2 id="cv-starter-heading">Start with your CV</h2><p>Add a PDF or DOCX, or paste your CV text. It stays in this browser for now.</p></div><div className="cv-starter__grid"><div className="cv-upload"><h3>Upload your CV</h3><div className="cv-dropzone" onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}><input id="cv-file" className="visually-hidden" type="file" accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={handleFileChange} /><p>Drag and drop your CV here</p><span>PDF or DOCX, up to 5 MB</span><label className="cv-picker" htmlFor="cv-file">Choose a file</label></div>{fileName && <p className="cv-selection" role="status">Selected: {fileName}</p>}{fileError && <p className="cv-file-error" role="alert">{fileError}</p>}</div><div className="cv-paste"><h3>Paste your CV text</h3><label htmlFor="cv-text">Paste your CV text</label><textarea id="cv-text" value={cvText} onChange={(event) => setCvText(event.target.value)} placeholder="Paste your CV here…" rows={7} />{cvText.trim() && <p className="cv-selection" role="status">CV text added locally.</p>}</div></div></section>
+  return (
+    <section className="cv-starter" aria-labelledby="cv-starter-heading">
+      <div className="cv-starter__intro">
+        <h2 id="cv-starter-heading">Start with your CV</h2>
+        <p>Add a PDF or DOCX, or paste your CV text.</p>
+      </div>
+      <div className="cv-starter__grid">
+        <div className="cv-upload">
+          <h3>Upload your CV</h3>
+          <div
+            className="cv-dropzone"
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={handleDrop}
+          >
+            <input
+              id="cv-file"
+              className="visually-hidden"
+              type="file"
+              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={handleFileChange}
+            />
+            <p>Drag and drop your CV here</p>
+            <span>PDF or DOCX, up to 5 MB</span>
+            <label className="cv-picker" htmlFor="cv-file">Choose a file</label>
+          </div>
+          {fileName && <p className="cv-selection" role="status">Selected: {fileName}</p>}
+          {fileError && <p className="cv-file-error" role="alert">{fileError}</p>}
+        </div>
+        <div className="cv-paste">
+          <h3>Paste your CV text</h3>
+          <label className="visually-hidden" htmlFor="cv-text">
+            Paste your CV text
+          </label>
+          <textarea
+            id="cv-text"
+            value={cvText}
+            onChange={(event) => setCvText(event.target.value)}
+            placeholder="Paste your CV here…"
+            rows={7}
+          />
+          {cvText.trim() && <p className="cv-selection" role="status">CV text added locally.</p>}
+        </div>
+      </div>
+      <div className="job-description">
+        <h3>Add a job description</h3>
+        <label htmlFor="job-description">Job description</label>
+        <textarea
+          id="job-description"
+          value={jobDescription}
+          onChange={(event) => setJobDescription(event.target.value)}
+          placeholder="Paste the full job description, responsibilities, and requirements here."
+          rows={10}
+        />
+      </div>
+    </section>
+  )
 }
 
-function HomeView({ status, onLogin, onSignup, onRetry }: { status: ConnectionStatus; onLogin: () => void; onSignup: () => void; onRetry: () => void }) {
-  return <div className="home-page"><header className="home-nav"><span className="home-brand">Job Comparer</span><button type="button" className="home-login" onClick={onLogin}>Log in</button></header><main className="home-content"><div className="home-layout"><div className="home-hero"><h1>Compare your CV with the jobs you want!</h1><p>Save your CV, compare it with job descriptions, and review the evidence and possible gaps.</p><button type="button" className="home-cta" onClick={onSignup}>Sign up to compare</button></div><section className="how-it-works" aria-labelledby="how-it-works-heading"><p className="eyebrow" id="how-it-works-heading">How it works</p><ol className="steps"><li><span className="step-number">1</span><div><h2>Save your CV</h2><p>Upload a PDF or DOCX, or paste your CV text.</p></div></li><li><span className="step-number">2</span><div><h2>Add a job</h2><p>Paste the job description and save the role you’re interested in.</p></div></li><li><span className="step-number">3</span><div><h2>Review the comparison</h2><p>See evidence-backed matches and possible gaps to explore.</p></div></li></ol><p className="privacy-note">Your CV and saved jobs stay private to your account.</p></section></div><StartWithCV />{status === 'unavailable' && <section className="connection-help" aria-labelledby="connection-heading"><p className="eyebrow" id="connection-heading">Connection needed</p><p>Start the FastAPI server at http://127.0.0.1:8001, then try again.</p><button type="button" onClick={onRetry}>Retry connection</button></section>}</main></div>
+function HomeView({
+  status,
+  onLogin,
+  onSignup,
+  onRetry,
+}: {
+  status: ConnectionStatus
+  onLogin: () => void
+  onSignup: () => void
+  onRetry: () => void
+}) {
+  return (
+    <div className="home-page">
+      <header className="home-nav">
+        <span className="home-brand">Job Comparer</span>
+        <button type="button" className="home-login" onClick={onLogin}>Log in</button>
+      </header>
+      <main className="home-content">
+        <div className="home-layout">
+          <div className="home-hero">
+            <h1>Compare your CV with the jobs you want!</h1>
+            <p>Save your CV, compare it with job descriptions, and review the evidence and possible gaps.</p>
+            <button type="button" className="home-cta" onClick={onSignup}>
+              Sign up to compare
+            </button>
+          </div>
+          <section className="how-it-works" aria-labelledby="how-it-works-heading">
+            <p className="eyebrow" id="how-it-works-heading">How it works</p>
+            <ol className="steps">
+              <li>
+                <span className="step-number">1</span>
+                <div><h2>Save your CV</h2><p>Upload a PDF or DOCX, or paste your CV text.</p></div>
+              </li>
+              <li>
+                <span className="step-number">2</span>
+                <div><h2>Add a job</h2><p>Paste the job description and save the role you’re interested in.</p></div>
+              </li>
+              <li>
+                <span className="step-number">3</span>
+                <div><h2>Review the comparison</h2><p>See evidence-backed matches and possible gaps to explore.</p></div>
+              </li>
+            </ol>
+            <p className="privacy-note">Your CV and saved jobs stay private to your account.</p>
+          </section>
+        </div>
+        <StartWithCV />
+        {status === 'unavailable' && (
+          <section className="connection-help" aria-labelledby="connection-heading">
+            <p className="eyebrow" id="connection-heading">Connection needed</p>
+            <p>Start the FastAPI server at http://127.0.0.1:8001, then try again.</p>
+            <button type="button" onClick={onRetry}>Retry connection</button>
+          </section>
+        )}
+      </main>
+    </div>
+  )
 }
 
 function App() {
