@@ -117,7 +117,6 @@ function StartWithCV() {
       </div>
       <div className="job-description">
         <h3>Add a job description</h3>
-        <label htmlFor="job-description">Job description</label>
         <textarea
           id="job-description"
           value={jobDescription}
@@ -125,6 +124,9 @@ function StartWithCV() {
           placeholder="Paste the full job description, responsibilities, and requirements here."
           rows={10}
         />
+      </div>
+      <div className="cv-starter__actions">
+        <button type="button" className="cv-save">Save</button>
       </div>
     </section>
   )
