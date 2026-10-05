@@ -72,15 +72,20 @@ def test_sentence_boundaries_keep_evidence_specific_and_context_visible(
     assert "".join(item["text"] for item in cv_items) == cv
     assert "".join(item["text"] for item in job_items) == job
     output = {
-        "matched_requirements": [{
-            "requirement": "Linux deployment",
-            "cv_evidence_id": cv_items[1]["id"],
+        "inventory_complete": True,
+        "requirements": [{
+            "id": "req_0001", "requirement": "Linux deployment",
             "job_evidence_id": job_items[0]["id"],
-        }],
-        "possible_gaps": [{
-            "requirement": "Engineering degree",
+        }, {
+            "id": "req_0002", "requirement": "Engineering degree",
             "job_evidence_id": job_items[1]["id"],
-            "status": "not_found_in_cv",
+        }],
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "matched",
+            "cv_evidence_id": cv_items[1]["id"],
+        }, {
+            "requirement_id": "req_0002",
+            "status": "not_found_in_cv", "cv_evidence_id": "",
         }],
     }
     calls = mock_provider(monkeypatch, output)
@@ -134,6 +139,126 @@ def test_long_unbroken_source_is_partitioned_without_loss() -> None:
     check_input_limits(cv, job)
 
 
+def test_bullet_boundaries_keep_requirements_local_without_loss() -> None:
+    source = "Requirements:\n- Python development\n- Linux deployment"
+    excerpts = source_excerpts(source, "job")
+
+    assert "".join(item["text"] for item in excerpts) == source
+    assert len(excerpts) == 3
+    assert "Linux" not in excerpts[1]["text"]
+    assert "Python" not in excerpts[2]["text"]
+
+
+@pytest.mark.parametrize(
+    "second_requirement,assessments,category",
+    [
+        (
+            "Strong Python development skills",
+            ["req_0001", "req_0002"],
+            "duplicate_requirement",
+        ),
+        ("Linux deployment", ["req_0001"], "missing_assessment"),
+    ],
+)
+def test_inventory_is_unique_and_fully_assessed(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    second_requirement: str,
+    assessments: list[str],
+    category: str,
+) -> None:
+    output = {
+        "inventory_complete": True,
+        "requirements": [
+            {
+                "id": f"req_{index:04d}", "requirement": label,
+                "job_evidence_id": "job_0001",
+            }
+            for index, label in enumerate(
+                ("Strong Python development skills", second_requirement),
+                start=1,
+            )
+        ],
+        "assessments": [
+            {
+                "requirement_id": identifier,
+                "status": "not_found_in_cv", "cv_evidence_id": "",
+            }
+            for identifier in assessments
+        ],
+    }
+    mock_provider(monkeypatch, output)
+
+    with pytest.raises(InvalidProviderOutput):
+        compare(
+            "Worked with Python and Linux.",
+            "Python and Linux deployment required.",
+            ProviderSettings("test-key", "gpt-4o-mini"),
+        )
+    assert f'"category": "{category}"' in caplog.text
+
+
+def test_unassessed_requirement_is_not_manufactured_as_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = {
+        "inventory_complete": False,
+        "requirements": [{
+            "id": "req_0001", "requirement": "Linux deployment",
+            "job_evidence_id": "job_0001",
+        }],
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "unassessed",
+            "cv_evidence_id": "",
+        }],
+    }
+    mock_provider(monkeypatch, output)
+
+    result = compare(
+        "Deployed on Ubuntu.", "Linux deployment required.",
+        ProviderSettings("test-key", "gpt-4o-mini"),
+    )
+
+    assert result.matched_requirements == []
+    assert result.possible_gaps == []
+    assert "comparison is incomplete" in result.interpretation
+    assert "Linux deployment" in result.interpretation
+    assert "may omit criteria" in result.interpretation
+
+
+def test_public_list_limit_marks_unshown_requirements_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = {
+        "inventory_complete": True,
+        "requirements": [
+            {
+                "id": f"req_{index:04d}",
+                "requirement": f"Criterion {index}",
+                "job_evidence_id": "job_0001",
+            }
+            for index in range(1, 12)
+        ],
+        "assessments": [
+            {
+                "requirement_id": f"req_{index:04d}",
+                "status": "not_found_in_cv", "cv_evidence_id": "",
+            }
+            for index in range(1, 12)
+        ],
+    }
+    mock_provider(monkeypatch, output)
+
+    result = compare(
+        "Synthetic CV.", "Synthetic criteria required.",
+        ProviderSettings("test-key", "gpt-4o-mini"),
+    )
+
+    assert len(result.possible_gaps) == 10
+    assert "comparison is incomplete" in result.interpretation
+    assert "Criterion 11" in result.interpretation
+
+
 @pytest.mark.parametrize("start,end", [(1190, 2077), (1430, 2045)])
 def test_observed_legacy_offsets_are_not_accepted_as_new_evidence(
     monkeypatch: pytest.MonkeyPatch,
@@ -145,16 +270,19 @@ def test_observed_legacy_offsets_are_not_accepted_as_new_evidence(
     # text from that request is retained in this regression fixture.
     assert end - start > MAX_EVIDENCE_CHARS
     output = {
-        "matched_requirements": [{
-            "requirement": "Synthetic skill",
+        "inventory_complete": True,
+        "requirements": [{
+            "id": "req_0001", "requirement": "Synthetic skill",
+            "job_evidence_id": "job_0001",
+        }],
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "matched",
             "cv_evidence_id": "cv_0001",
             "cv_start": start,
             "cv_end": end,
-            "job_evidence_id": "job_0001",
             "job_start": 0,
             "job_end": 20,
         }],
-        "possible_gaps": [],
     }
     mock_provider(monkeypatch, output)
 
@@ -164,7 +292,7 @@ def test_observed_legacy_offsets_are_not_accepted_as_new_evidence(
             ProviderSettings("test-key", "gpt-4o-mini"),
         )
     assert '"category": "schema_validation"' in caplog.text
-    assert '"field": "$.matched_requirements[0].<extra>"' in caplog.text
+    assert '"field": "$.assessments[0].<extra>"' in caplog.text
 
 
 def test_same_requirement_cannot_be_match_and_gap(
@@ -172,15 +300,18 @@ def test_same_requirement_cannot_be_match_and_gap(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     output = {
-        "matched_requirements": [{
-            "requirement": "Linux experience",
-            "cv_evidence_id": "cv_0001",
+        "inventory_complete": True,
+        "requirements": [{
+            "id": "req_0001", "requirement": "Linux experience",
             "job_evidence_id": "job_0001",
         }],
-        "possible_gaps": [{
-            "requirement": " Linux  experience ",
-            "job_evidence_id": "job_0001",
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "matched",
+            "cv_evidence_id": "cv_0001",
+        }, {
+            "requirement_id": "req_0001",
             "status": "not_found_in_cv",
+            "cv_evidence_id": "",
         }],
     }
     mock_provider(monkeypatch, output)
@@ -190,5 +321,5 @@ def test_same_requirement_cannot_be_match_and_gap(
             "Worked with Linux.", "Linux experience required.",
             ProviderSettings("test-key", "gpt-4o-mini"),
         )
-    assert '"category": "conflicting_classification"' in caplog.text
-    assert '"field": "$.possible_gaps[0].requirement"' in caplog.text
+    assert '"category": "duplicate_assessment"' in caplog.text
+    assert '"field": "$.assessments[1].requirement_id"' in caplog.text

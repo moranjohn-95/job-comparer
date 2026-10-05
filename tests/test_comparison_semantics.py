@@ -70,7 +70,7 @@ def reference(text: str, source: str, quote: str) -> dict:
             [
                 "slash-separated phrase can mean alternatives or combined",
                 "Do not combine a supported part and an unsupported part",
-                "Never put the same requirement label in both matches",
+                "Never put the same requirement ID in both matches",
                 "projects, technical skills, education, and training",
             ],
             id="machine-learning-found-deep-learning-gap",
@@ -111,22 +111,33 @@ def test_semantic_contract_and_relevant_excerpts(
     gaps: list[tuple[str, str]],
     rules: list[str],
 ) -> None:
+    criteria = [
+        (label, job_quote) for label, _, job_quote in matches
+    ] + gaps
     output = {
-        "matched_requirements": [
+        "inventory_complete": True,
+        "requirements": [
             {
-                "requirement": label,
-                **reference(cv, "cv", cv_quote),
+                "id": f"req_{index:04d}", "requirement": label,
                 **reference(job, "job", job_quote),
             }
-            for label, cv_quote, job_quote in matches
+            for index, (label, job_quote) in enumerate(
+                criteria, start=1
+            )
         ],
-        "possible_gaps": [
+        "assessments": [
             {
-                "requirement": label,
-                **reference(job, "job", job_quote),
-                "status": "not_found_in_cv",
+                "requirement_id": f"req_{index:04d}",
+                "status": "matched",
+                **reference(cv, "cv", cv_quote),
             }
-            for label, job_quote in gaps
+            for index, (_, cv_quote, _) in enumerate(matches, start=1)
+        ] + [
+            {
+                "requirement_id": f"req_{index:04d}",
+                "status": "not_found_in_cv", "cv_evidence_id": "",
+            }
+            for index in range(len(matches) + 1, len(criteria) + 1)
         ],
     }
     payloads = []

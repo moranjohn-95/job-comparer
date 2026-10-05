@@ -6,6 +6,7 @@ these examples to establish whether it follows the instructions.
 """
 
 import json
+import re
 
 import httpx
 import pytest
@@ -191,22 +192,28 @@ def test_accuracy_instructions_and_synthetic_response_contract(
             for label in gaps
         ],
     }
+    labels = [label for label, _ in matches] + gaps
     references = {
-        "matched_requirements": [
+        "inventory_complete": True,
+        "requirements": [
             {
-                "requirement": label,
-                "cv_evidence_id": item["id"],
+                "id": f"req_{index:04d}", "requirement": label,
                 "job_evidence_id": job_item["id"],
             }
-            for (label, _), item in zip(matches, selected)
+            for index, label in enumerate(labels, start=1)
         ],
-        "possible_gaps": [
+        "assessments": [
             {
-                "requirement": label,
-                "job_evidence_id": job_item["id"],
-                "status": "not_found_in_cv",
+                "requirement_id": f"req_{index:04d}",
+                "status": "matched", "cv_evidence_id": item["id"],
             }
-            for label in gaps
+            for index, item in enumerate(selected, start=1)
+        ] + [
+            {
+                "requirement_id": f"req_{index:04d}",
+                "status": "not_found_in_cv", "cv_evidence_id": "",
+            }
+            for index in range(len(matches) + 1, len(labels) + 1)
         ],
     }
     payloads = []
@@ -237,7 +244,11 @@ def test_accuracy_instructions_and_synthetic_response_contract(
         assert rule in system_message["content"]
     assert user_message["role"] == "user"
     assert json.loads(user_message["content"]) == {
-        "cv_excerpts": cv_catalog, "job_excerpts": job_catalog,
+        "cv_excerpts": [
+            {**item, "text": re.sub(r"\s+", " ", item["text"])}
+            for item in cv_catalog
+        ],
+        "job_excerpts": job_catalog,
     }
     assert result.model_dump(exclude={"interpretation"}) == expected
     assert "does not establish" in result.interpretation

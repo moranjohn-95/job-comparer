@@ -55,16 +55,27 @@ PROVIDER_RESULT = {
     ],
 }
 PROVIDER_REFERENCES = {
-    "matched_requirements": [{
-        "requirement": "Python APIs",
-        "job_evidence_id": "job_0001",
-        "cv_evidence_id": "cv_0001",
-    }],
-    "possible_gaps": [{
-        "requirement": "Kubernetes",
-        "job_evidence_id": "job_0002",
-        "status": "not_found_in_cv",
-    }],
+    "inventory_complete": True,
+    "requirements": [
+        {
+            "id": "req_0001", "requirement": "Python APIs",
+            "job_evidence_id": "job_0001",
+        },
+        {
+            "id": "req_0002", "requirement": "Kubernetes",
+            "job_evidence_id": "job_0002",
+        },
+    ],
+    "assessments": [
+        {
+            "requirement_id": "req_0001", "status": "matched",
+            "cv_evidence_id": "cv_0001",
+        },
+        {
+            "requirement_id": "req_0002",
+            "status": "not_found_in_cv", "cv_evidence_id": "",
+        },
+    ],
 }
 
 
@@ -76,6 +87,7 @@ def reset_ai_usage(
     monkeypatch.setenv("AI_COMPARISON_ENABLED", "true")
     monkeypatch.delenv("AI_APP_DAILY_LIMIT", raising=False)
     monkeypatch.delenv("AI_APP_MONTHLY_LIMIT", raising=False)
+    monkeypatch.delenv("AI_ACCOUNT_DAILY_LIMIT", raising=False)
     with Session(get_engine()) as session:
         session.execute(
             delete(AIUsageCounter).where(
@@ -164,7 +176,7 @@ def provider_response(result: dict) -> httpx.Response:
 def mock_success(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
     calls: list[dict] = []
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
 
     def fake_post(*_: object, **kwargs: object) -> httpx.Response:
         calls.append(kwargs["json"])
@@ -196,13 +208,13 @@ def test_comparison_returns_grounded_result_and_sends_only_owned_text(
     seen = []
 
     def fake_post(
-        url: str, *, headers: dict, json: dict, timeout: float
+        url: str, *, headers: dict, json: dict, timeout: httpx.Timeout
     ) -> httpx.Response:
         seen.append((url, headers, json, timeout))
         return provider_response(PROVIDER_REFERENCES)
 
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr("comparison._post_once", fake_post)
 
     response = client.post(f"/jobs/{job_id}/compare", headers=headers)
@@ -223,15 +235,16 @@ def test_comparison_returns_grounded_result_and_sends_only_owned_text(
     url, provider_headers, payload, timeout = seen[0]
     assert url == "https://api.openai.com/v1/responses"
     assert provider_headers == {"Authorization": "Bearer test-provider-key"}
-    assert payload["model"] == "gpt-4o-mini"
+    assert payload["model"] == "gpt-6.1-sol"
     assert payload["store"] is False
-    assert payload["max_output_tokens"] == MAX_OUTPUT_TOKENS
+    assert payload["reasoning"] == {"effort": "medium"}
+    assert payload["max_output_tokens"] == MAX_OUTPUT_TOKENS == 12_000
     assert payload["text"]["format"]["strict"] is True
     assert json.loads(payload["input"][1]["content"]) == {
         "cv_excerpts": source_excerpts(CV_TEXT, "cv"),
         "job_excerpts": source_excerpts(JOB_DESCRIPTION, "job"),
     }
-    assert timeout == 30.0
+    assert timeout == httpx.Timeout(30.0, read=120.0)
 
 
 def test_missing_cv_does_not_call_provider(
@@ -279,7 +292,7 @@ def test_unauthenticated_comparison_is_rejected(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once",
         lambda *_, **__: pytest.fail("provider called"),
@@ -295,31 +308,37 @@ def test_unauthenticated_comparison_is_rejected(
         {**PROVIDER_REFERENCES, "score": 95},
         PROVIDER_RESULT,
         {
-            "matched_requirements": [
+            "inventory_complete": True,
+            "requirements": PROVIDER_REFERENCES["requirements"],
+            "assessments": [
                 {
-                    **PROVIDER_REFERENCES["matched_requirements"][0],
+                    **PROVIDER_REFERENCES["assessments"][0],
                     "cv_evidence_id": "cv_9999",
-                }
+                },
+                PROVIDER_REFERENCES["assessments"][1],
             ],
-            "possible_gaps": [],
         },
         {
-            "matched_requirements": [],
-            "possible_gaps": [
+            "inventory_complete": True,
+            "requirements": PROVIDER_REFERENCES["requirements"],
+            "assessments": [
+                PROVIDER_REFERENCES["assessments"][0],
                 {
-                    **PROVIDER_REFERENCES["possible_gaps"][0],
+                    **PROVIDER_REFERENCES["assessments"][1],
                     "status": "lacks_skill",
-                }
+                },
             ],
         },
         {
-            "matched_requirements": [],
-            "possible_gaps": [
+            "inventory_complete": True,
+            "requirements": [
+                PROVIDER_REFERENCES["requirements"][0],
                 {
-                    **PROVIDER_REFERENCES["possible_gaps"][0],
+                    **PROVIDER_REFERENCES["requirements"][1],
                     "requirement": "  ",
-                }
+                },
             ],
+            "assessments": PROVIDER_REFERENCES["assessments"],
         },
     ],
 )
@@ -333,7 +352,7 @@ def test_malformed_provider_output_has_generic_error(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once", lambda *_, **__: provider_response(bad_result)
     )
@@ -361,7 +380,7 @@ def test_provider_failure_does_not_expose_cv_or_provider_error(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
 
     def failed_post(*_: object, **__: object) -> None:
         raise httpx.ConnectError(f"provider failed with {CV_TEXT}")
@@ -386,7 +405,7 @@ def test_incomplete_provider_response_is_rejected(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once",
         lambda *_, **__: httpx.Response(
@@ -414,7 +433,7 @@ def test_non_json_provider_response_is_rejected(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once",
         lambda *_, **__: httpx.Response(
@@ -442,7 +461,7 @@ def test_unconfigured_provider_returns_clear_error_without_request(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "replace-with-your-api-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once",
         lambda *_, **__: pytest.fail("provider called"),
@@ -791,7 +810,7 @@ def test_provider_failures_consume_attempts_without_retries(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     attempts = []
 
     def fail(*_: object, **__: object) -> None:
@@ -895,20 +914,28 @@ def test_qualification_mismatch_returns_and_saves_incomplete_result(
         ),
     )
     references = {
-        "matched_requirements": [
+        "inventory_complete": True,
+        "requirements": [
             {
+                "id": f"req_{index:04d}",
                 "requirement": label,
-                "cv_evidence_id": f"cv_{index:04d}",
                 "job_evidence_id": f"job_{index:04d}",
             }
             for index, label in enumerate(
                 ("Python experience", "Engineering degree"), start=1
             )
         ],
-        "possible_gaps": [],
+        "assessments": [
+            {
+                "requirement_id": f"req_{index:04d}",
+                "status": "matched",
+                "cv_evidence_id": f"cv_{index:04d}",
+            }
+            for index in (1, 2)
+        ],
     }
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     monkeypatch.setattr(
         "comparison._post_once",
         lambda *_, **__: provider_response(references),
@@ -980,7 +1007,7 @@ def test_failed_comparison_creates_no_history(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     if failure == "provider":
         def fake_post(*_: object, **__: object) -> None:
             raise httpx.ConnectError("provider unavailable")
@@ -1083,7 +1110,7 @@ def test_cv_replacement_during_provider_call_marks_result_outdated(
     headers = create_user()
     job_id = prepare(client, headers)
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
 
     def replace_cv(*_: object, **__: object) -> httpx.Response:
         with TestClient(app) as second_client:

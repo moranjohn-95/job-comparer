@@ -18,12 +18,15 @@ JOB = "SYNTHETIC_PRIVATE_JOB: Monthly reporting required."
 PRIVATE = "SYNTHETIC_PRIVATE_PROVIDER_CONTENT"
 KEY = "SYNTHETIC_PRIVATE_API_KEY"
 RESULT = {
-    "matched_requirements": [{
-        "requirement": "Monthly reporting",
-        "cv_evidence_id": "cv_0001",
+    "inventory_complete": True,
+    "requirements": [{
+        "id": "req_0001", "requirement": "Monthly reporting",
         "job_evidence_id": "job_0001",
     }],
-    "possible_gaps": [],
+    "assessments": [{
+        "requirement_id": "req_0001", "status": "matched",
+        "cv_evidence_id": "cv_0001",
+    }],
 }
 
 
@@ -181,7 +184,7 @@ def test_invalid_json_distinguishes_envelope_and_generated_text(
             "response_envelope", "response.output[0].content[0].text",
         ),
         (envelope([]), "schema_validation", "$"),
-        (envelope({}), "schema_validation", "$.matched_requirements"),
+        (envelope({}), "schema_validation", "$.assessments"),
         (
             envelope({**RESULT, PRIVATE: PRIVATE}),
             "schema_validation", "$.<extra>",
@@ -197,69 +200,60 @@ def test_other_rejections_have_safe_categories_and_paths(
 
 
 @pytest.mark.parametrize(
-    "field,value,category,length",
+    "group,field,value,category,length",
     [
-        ("requirement", "x" * 161, "length_constraint", 161),
-        ("cv_evidence_id", "x" * 25, "length_constraint", 25),
-        ("job_evidence_id", "x" * 25, "length_constraint", 25),
-        ("cv_evidence_id", "", "length_constraint", 0),
-        ("requirement", "  ", "blank_field", 2),
-        ("requirement", 7, "schema_validation", None),
-        (PRIVATE, PRIVATE, "schema_validation", len(PRIVATE)),
+        ("requirements", "requirement", "x" * 161,
+         "length_constraint", 161),
+        ("assessments", "cv_evidence_id", "x" * 25,
+         "length_constraint", 25),
+        ("requirements", "job_evidence_id", "x" * 25,
+         "length_constraint", 25),
+        ("assessments", "requirement_id", "",
+         "length_constraint", 0),
+        ("requirements", "requirement", "  ", "blank_field", 2),
+        ("requirements", "requirement", 7, "schema_validation", None),
+        ("requirements", PRIVATE, PRIVATE,
+         "schema_validation", len(PRIVATE)),
     ],
 )
 def test_field_validation_logs_lengths_not_input_values(
-    monkeypatch, caplog, field, value, category, length,
+    monkeypatch, caplog, group, field, value, category, length,
 ) -> None:
     result = deepcopy(RESULT)
-    result["matched_requirements"][0][field] = value
+    result[group][0][field] = value
     diagnostic = reject_and_capture(monkeypatch, caplog, envelope(result))
     assert diagnostic["category"] == category
     safe_field = "<extra>" if field == PRIVATE else field
-    assert diagnostic["field"] == f"$.matched_requirements[0].{safe_field}"
+    assert diagnostic["field"] == f"$.{group}[0].{safe_field}"
     assert diagnostic.get("actual_length") == length
     assert diagnostic["validation_error_count"] == 1
     assert diagnostic["provider_status"] == "completed"
     assert diagnostic["output_tokens"] == 321
 
 
-@pytest.mark.parametrize("field", ["matched_requirements", "possible_gaps"])
+@pytest.mark.parametrize("field", ["requirements", "assessments"])
 def test_list_limit_remains_strict(monkeypatch, caplog, field) -> None:
     result = deepcopy(RESULT)
-    if field == "matched_requirements":
-        item = result["matched_requirements"][0]
-    else:
-        item = {
-            "requirement": "Monthly reporting",
-            "job_evidence_id": "job_0001",
-            "status": "not_found_in_cv",
-        }
-    result[field] = [item] * 11
+    result[field] = result[field] * 21
     diagnostic = reject_and_capture(monkeypatch, caplog, envelope(result))
     assert diagnostic["category"] == "length_constraint"
     assert diagnostic["field"] == f"$.{field}"
-    assert diagnostic["actual_length"] == 11
-    assert diagnostic[field + "_count"] == 11
+    assert diagnostic["actual_length"] == 21
+    assert diagnostic[field + "_count"] == 21
     assert diagnostic["validation_type"] == "too_long"
 
 
 @pytest.mark.parametrize(
     "group,field",
     [
-        ("matched_requirements", "cv_evidence_id"),
-        ("matched_requirements", "job_evidence_id"),
-        ("possible_gaps", "job_evidence_id"),
+        ("assessments", "cv_evidence_id"),
+        ("requirements", "job_evidence_id"),
     ],
 )
 def test_unknown_reference_keeps_validation_strict_and_ids_private(
     monkeypatch, caplog, group, field,
 ) -> None:
     result = deepcopy(RESULT)
-    result["possible_gaps"] = [{
-        "requirement": "Other reporting",
-        "job_evidence_id": "job_0001",
-        "status": "not_found_in_cv",
-    }]
     result[group][0][field] = "missing_0001"
     diagnostic = reject_and_capture(monkeypatch, caplog, envelope(result))
     assert diagnostic["category"] == "unknown_evidence_id"
@@ -271,20 +265,14 @@ def test_unknown_reference_keeps_validation_strict_and_ids_private(
 @pytest.mark.parametrize(
     "group,field,wrong_id",
     [
-        ("matched_requirements", "cv_evidence_id", "job_0001"),
-        ("matched_requirements", "job_evidence_id", "cv_0001"),
-        ("possible_gaps", "job_evidence_id", "cv_0001"),
+        ("assessments", "cv_evidence_id", "job_0001"),
+        ("requirements", "job_evidence_id", "cv_0001"),
     ],
 )
 def test_wrong_source_reference_is_rejected_without_leaking_text(
     monkeypatch, caplog, group, field, wrong_id,
 ) -> None:
     result = deepcopy(RESULT)
-    result["possible_gaps"] = [{
-        "requirement": "Other reporting",
-        "job_evidence_id": "job_0001",
-        "status": "not_found_in_cv",
-    }]
     result[group][0][field] = wrong_id
     diagnostic = reject_and_capture(monkeypatch, caplog, envelope(result))
 

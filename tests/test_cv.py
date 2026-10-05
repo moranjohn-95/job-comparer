@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Callable, Iterator
 from io import BytesIO
 from uuid import uuid4
@@ -379,7 +380,7 @@ def test_all_cv_sections_reach_provider_without_truncation(
     assert job.status_code == 201
     monkeypatch.setenv("AI_COMPARISON_ENABLED", "true")
     monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-6.1-sol")
     payloads = []
 
     def fake_post(*_: object, **kwargs: object) -> httpx.Response:
@@ -394,7 +395,8 @@ def test_all_cv_sections_reach_provider_without_truncation(
                     "content": [{
                         "type": "output_text",
                         "text": json.dumps({
-                            "matched_requirements": [], "possible_gaps": [],
+                            "inventory_complete": True,
+                            "requirements": [], "assessments": [],
                         }),
                     }],
                 }],
@@ -409,7 +411,10 @@ def test_all_cv_sections_reach_provider_without_truncation(
     assert response.status_code == 200
     assert len(payloads) == 1
     assert json.loads(payloads[0]["input"][1]["content"]) == {
-        "cv_excerpts": source_excerpts(cv_text, "cv"),
+        "cv_excerpts": [
+            {**item, "text": re.sub(r"\s+", " ", item["text"])}
+            for item in source_excerpts(cv_text, "cv")
+        ],
         "job_excerpts": source_excerpts(job_text, "job"),
     }
     for section in sections:

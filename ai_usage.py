@@ -43,6 +43,9 @@ def get_app_limits() -> tuple[int, int]:
 
 
 def reserve_attempt(session: Session, user_id: int) -> None:
+    account_daily_limit = _configured_limit(
+        "AI_ACCOUNT_DAILY_LIMIT", ACCOUNT_DAILY_LIMIT,
+    )
     app_daily_limit, app_monthly_limit = get_app_limits()
     # Every worker locks this same row before reading or writing counters.
     # The commit occurs before the provider call, so uncertain failures count.
@@ -63,8 +66,8 @@ def reserve_attempt(session: Session, user_id: int) -> None:
     checks = (
         (
             f"user:{user_id}:{day}",
-            ACCOUNT_DAILY_LIMIT,
-            "Daily account comparison limit reached (3)",
+            account_daily_limit,
+            f"Daily account comparison limit reached ({account_daily_limit})",
         ),
         (
             f"app:day:{day}",

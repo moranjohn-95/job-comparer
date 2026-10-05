@@ -82,12 +82,15 @@ def test_provider_match_with_wrong_credential_type_is_withheld(
     requirement: str,
 ) -> None:
     output = {
-        "matched_requirements": [{
-            "requirement": requirement,
-            "cv_evidence_id": "cv_0001",
+        "inventory_complete": True,
+        "requirements": [{
+            "id": "req_0001", "requirement": requirement,
             "job_evidence_id": "job_0001",
         }],
-        "possible_gaps": [],
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "matched",
+            "cv_evidence_id": "cv_0001",
+        }],
     }
     monkeypatch.setattr(
         "comparison._post_once",
