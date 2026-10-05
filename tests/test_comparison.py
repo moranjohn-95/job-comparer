@@ -125,16 +125,20 @@ def create_user(client: TestClient) -> Iterator[Callable[[], dict[str, str]]]:
 
 
 def prepare(
-    client: TestClient, headers: dict[str, str], *, cv: bool = True
+    client: TestClient, headers: dict[str, str], *, cv: bool = True,
+    cv_text: str = CV_TEXT, job_description: str = JOB_DESCRIPTION,
 ) -> int:
     if cv:
         assert (
             client.put(
-                "/cv", json={"text": CV_TEXT}, headers=headers
+                "/cv", json={"text": cv_text}, headers=headers
             ).status_code
             == 200
         )
-    response = client.post("/jobs", json=JOB, headers=headers)
+    response = client.post(
+        "/jobs", json={**JOB, "description": job_description},
+        headers=headers,
+    )
     assert response.status_code == 201
     return response.json()["id"]
 
@@ -875,6 +879,56 @@ def test_successful_result_persists_as_private_history(
         assert "cv_text" not in entry.result
         assert "job_description" not in entry.result
         assert entry.result == comparison.json()
+
+
+def test_qualification_mismatch_returns_and_saves_incomplete_result(
+    client: TestClient,
+    create_user: Callable[[], dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = create_user()
+    job_id = prepare(
+        client, headers,
+        cv_text="Built Python services. Diploma in engineering.",
+        job_description=(
+            "Python experience required. Engineering degree required."
+        ),
+    )
+    references = {
+        "matched_requirements": [
+            {
+                "requirement": label,
+                "cv_evidence_id": f"cv_{index:04d}",
+                "job_evidence_id": f"job_{index:04d}",
+            }
+            for index, label in enumerate(
+                ("Python experience", "Engineering degree"), start=1
+            )
+        ],
+        "possible_gaps": [],
+    }
+    monkeypatch.setenv("OPENAI_API_KEY", "test-provider-key")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(
+        "comparison._post_once",
+        lambda *_, **__: provider_response(references),
+    )
+
+    response = client.post(f"/jobs/{job_id}/compare", headers=headers)
+
+    assert response.status_code == 200
+    result = response.json()
+    assert [
+        item["requirement"] for item in result["matched_requirements"]
+    ] == ["Python experience"]
+    assert result["possible_gaps"] == []
+    assert "comparison is incomplete" in result["interpretation"]
+    assert "Engineering degree" in result["interpretation"]
+    assert "Other CV evidence" in result["interpretation"]
+    history = client.get(
+        f"/jobs/{job_id}/comparisons", headers=headers,
+    )
+    assert history.json()[0]["result"] == result
 
 
 def test_history_list_and_view_enforce_job_and_comparison_ownership(

@@ -510,6 +510,43 @@ def _is_excerpt(excerpt: str, source: str) -> bool:
     return bool(normalized_excerpt) and normalized_excerpt in normalized_source
 
 
+def _credential_types(text: str) -> set[str]:
+    patterns = {
+        "bachelor": (
+            r"\bbachelor(?:'?s)?\b|\b(?:bsc|beng)\b|"
+            r"\bb\.(?:sc|eng)\.?(?!\w)"
+        ),
+        "master": (
+            r"\bmaster(?:'?s)?\b|\b(?:msc|meng)\b|"
+            r"\bm\.(?:sc|eng)\.?(?!\w)"
+        ),
+        "doctorate": r"\bdoctor(?:al|ate)\b|\bph\.?d\.?(?!\w)",
+        "diploma": r"\bdiploma\b",
+        "certificate": r"\bcertificate\b",
+        "degree": r"\bdegree\b",
+    }
+    return {
+        kind for kind, pattern in patterns.items()
+        if re.search(pattern, text, re.IGNORECASE)
+    }
+
+
+def _credential_type_supported(requirement: str, evidence: str) -> bool:
+    required = _credential_types(requirement)
+    degree_levels = {"bachelor", "master", "doctorate"}
+    if required & degree_levels:
+        required.discard("degree")
+    # Multiple credential types may be alternatives; their relationship
+    # needs contextual judgment, so only gate one unambiguous type.
+    if len(required) != 1:
+        return True
+    expected = next(iter(required))
+    found = _credential_types(evidence)
+    if expected == "degree":
+        return bool(found & (degree_levels | {"degree"}))
+    return expected in found
+
+
 def _resolve_reference(
     identifier: str, own: dict[str, str], other: dict[str, str],
     field: str, meta: dict,
@@ -609,4 +646,31 @@ def compare(
                 meta, evidence_chars=len(gap.job_evidence),
                 source_chars=len(job_description),
             )
-    return result
+    valid_matches = []
+    withheld = []
+    for match in result.matched_requirements:
+        if _credential_type_supported(
+            match.requirement, match.cv_evidence
+        ):
+            valid_matches.append(match)
+        else:
+            withheld.append(match.requirement)
+    if not withheld:
+        return result
+
+    notice = (
+        "This comparison is incomplete. Matched requirements withheld "
+        "because the selected CV evidence does not establish the required "
+        "qualification type or level: " + "; ".join(withheld) + ". "
+        "Other CV evidence for these requirements has not been ruled out."
+    )
+    if not valid_matches and not result.possible_gaps:
+        notice += (
+            " No validated matches or possible gaps are shown; this is "
+            "not a complete assessment."
+        )
+    return ComparisonResult(
+        matched_requirements=valid_matches,
+        possible_gaps=result.possible_gaps,
+        interpretation=notice + " " + result.interpretation,
+    )
