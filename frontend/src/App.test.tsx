@@ -138,6 +138,39 @@ test('keeps an entered job description in the local draft', () => {
   )
 })
 
+test('requires a CV and job description before opening signup', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Add a valid CV file or paste your CV text.')
+  expect(screen.getAllByRole('alert').at(-1)).toHaveTextContent('Add a job description.')
+  expect(screen.queryByRole('heading', { name: 'Sign up' })).not.toBeInTheDocument()
+})
+
+test('asks which CV to use and preserves the draft through signup and login', () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
+  render(<App />)
+
+  const file = new File(['cv'], 'ada-lovelace.pdf', { type: 'application/pdf' })
+  fireEvent.change(screen.getByLabelText('Choose a file'), { target: { files: [file] } })
+  fireEvent.change(screen.getByLabelText('Paste your CV text'), { target: { value: 'Ada CV' } })
+  fireEvent.change(screen.getByLabelText('Job description'), { target: { value: 'Build software.' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  expect(screen.getByRole('alert')).toHaveTextContent('Choose whether to use the uploaded file or pasted CV text.')
+
+  fireEvent.click(screen.getByLabelText('Use the pasted CV text'))
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  expect(screen.getByText('Create an account to save your CV and job description.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Back to home' }))
+  expect(screen.getByLabelText('Paste your CV text')).toHaveValue('Ada CV')
+  expect(screen.getByLabelText('Job description')).toHaveValue('Build software.')
+  expect(screen.getByLabelText('Use the pasted CV text')).toBeChecked()
+  expect(screen.getByText('Selected: ada-lovelace.pdf')).toBeVisible()
+})
+
 test('opens signup from the home hero and can return to login', () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ status: 'ok' }) }))
   render(<App />)
