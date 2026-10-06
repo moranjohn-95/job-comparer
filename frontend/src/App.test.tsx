@@ -665,7 +665,7 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   expect(screen.getByText("Operate services on Kubernetes.")).toBeVisible();
   expect(screen.queryByText("Built TypeScript web applications."))
     .not.toBeInTheDocument();
-  expect(screen.getByRole("heading", { name: "Needs review" })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Needs review 1" })).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: needsReview.requirement }));
   expect(screen.getByText(needsReview.reason)).toBeVisible();
   expect(screen.getByText(needsReview.cv_evidence))
@@ -677,11 +677,11 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   expect(screen.getAllByRole("region", { name: "Requirement details" }))
     .toHaveLength(1);
 
-  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  fireEvent.click(screen.getByRole("button", { name: "Compare again" }));
   expect(await screen.findByRole("button", {
     name: "Kubernetes", pressed: true,
   })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  fireEvent.click(screen.getByRole("button", { name: "Compare again" }));
   expect(await screen.findByRole("button", {
     name: needsReview.requirement, pressed: true,
   })).toBeVisible();
@@ -718,7 +718,7 @@ test("disables Compare while a comparison request is running", async () => {
   expect(screen.getByText("No matched requirements were returned."))
     .toBeVisible();
   expect(screen.getByText("No possible gaps were returned.")).toBeVisible();
-  expect(screen.queryByRole("heading", { name: "Needs review" }))
+  expect(screen.queryByRole("heading", { name: /Needs review/ }))
     .not.toBeInTheDocument();
   expect(screen.getByText(comparisonResult.interpretation)).toBeVisible();
 });

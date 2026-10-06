@@ -61,6 +61,11 @@ const statusText: Record<ConnectionStatus, string> = {
   connected: "API connected",
   unavailable: "API unavailable",
 };
+const requirementCategoryLabels: Record<RequirementCategory, string> = {
+  matched_requirements: "Matched requirement",
+  possible_gaps: "Possible gap",
+  needs_review: "Needs review",
+};
 
 function Icon({ name }: { name: IconName }): ReactNode {
   const shared = {
@@ -521,8 +526,39 @@ function HomeView({
   );
 }
 
-function RequirementRow({ title, selected, onSelect }: {
+function ComparisonStatusIcon({ category }: {
+  category: RequirementCategory;
+}) {
+  return (
+    <svg
+      className="comparison-status-icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <circle cx="12" cy="12" r="10" fill="currentColor" />
+      <g
+        fill="none"
+        stroke="var(--color-surface)"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {category === "matched_requirements" ? (
+          <path d="m7 12 3 3 7-7" />
+        ) : category === "possible_gaps" ? (
+          <path d="M7 12h10" />
+        ) : (
+          <path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 2-2.5 2-2.5 4m0 3h.01" />
+        )}
+      </g>
+    </svg>
+  );
+}
+
+function RequirementRow({ title, category, selected, onSelect }: {
   title: string;
+  category: RequirementCategory;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -535,12 +571,26 @@ function RequirementRow({ title, selected, onSelect }: {
         aria-controls="comparison-details"
         onClick={onSelect}
       >
-        <span>{title}</span>
+        <ComparisonStatusIcon category={category} />
+        <span className="comparison-option__title">{title}</span>
         {selected && (
           <span className="comparison-option__selected" aria-hidden="true">
             Selected
           </span>
         )}
+        <svg
+          className="comparison-option__chevron"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="m6 3 5 5-5 5" />
+        </svg>
       </button>
     </li>
   );
@@ -888,11 +938,21 @@ function App() {
           <span>{statusText[status]}</span>
         </div>
       </aside>
-      <main className="main-content">
+      <main
+        className={comparison
+          ? "main-content main-content--comparison"
+          : "main-content"}
+      >
         <div className="page-heading">
-          <p className="eyebrow">Workspace</p>
-          <h1>Dashboard</h1>
-          <p>Compare your CV with key aspects of job descriptions.</p>
+          {comparison ? (
+            <h1 id="comparison-heading">Comparison results</h1>
+          ) : (
+            <>
+              <p className="eyebrow">Workspace</p>
+              <h1>Dashboard</h1>
+              <p>Compare your CV with key aspects of job descriptions.</p>
+            </>
+          )}
         </div>
         {isSavingDraft && (
           <p role="status">
@@ -911,17 +971,31 @@ function App() {
         )}
         {savedJob && (
           <section className="save-confirmation">
-            <h2>Job saved</h2>
-            <p>
-              {savedJob.title} at {savedJob.company_name} has been saved.
-            </p>
-            <button
-              type="button"
-              onClick={runComparison}
-              disabled={isComparing}
-            >
-              {isComparing ? "Comparing…" : "Compare"}
-            </button>
+            <div className={comparison ? "comparison-job-bar" : undefined}>
+              {comparison ? (
+                <div className="comparison-job-summary">
+                  <h2>{savedJob.title}</h2>
+                  <p>{savedJob.company_name}</p>
+                  <span className="comparison-saved-status">Saved</span>
+                </div>
+              ) : (
+                <>
+                  <h2>Job saved</h2>
+                  <p>
+                    {savedJob.title} at {savedJob.company_name} has been saved.
+                  </p>
+                </>
+              )}
+              <button
+                type="button"
+                onClick={runComparison}
+                disabled={isComparing}
+              >
+                {isComparing
+                  ? "Comparing…"
+                  : comparison ? "Compare again" : "Compare"}
+              </button>
+            </div>
             {isComparing && <p role="status">Comparing your CV and job…</p>}
             {comparisonError && (
               <p role="alert">Comparison unavailable: {comparisonError}</p>
@@ -931,91 +1005,129 @@ function App() {
                 className="comparison-results"
                 aria-labelledby="comparison-heading"
               >
-                <h2 id="comparison-heading">Comparison results</h2>
-                <section
-                  className="comparison-section comparison-section--matched"
-                  aria-labelledby="comparison-matches-heading"
-                >
-                  <h3 id="comparison-matches-heading">Matched requirements</h3>
-                  {comparison.matched_requirements.length > 0 ? (
-                    <ul className="comparison-list">
-                      {comparison.matched_requirements.map((match, index) => (
-                        <RequirementRow
-                          key={`match-${index}`}
-                          title={match.requirement}
-                          selected={
-                            activeSelection?.category === "matched_requirements"
-                            && activeSelection.index === index
-                          }
-                          onSelect={() =>
-                            selectRequirement("matched_requirements", index)
-                          }
-                        />
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="comparison-empty">
-                      No matched requirements were returned.
-                    </p>
-                  )}
-                </section>
-                <section
-                  className="comparison-section comparison-section--gaps"
-                  aria-labelledby="comparison-gaps-heading"
-                >
-                  <h3 id="comparison-gaps-heading">Possible gaps</h3>
-                  {comparison.possible_gaps.length > 0 ? (
-                    <ul className="comparison-list">
-                      {comparison.possible_gaps.map((gap, index) => (
-                        <RequirementRow
-                          key={`gap-${index}`}
-                          title={gap.requirement}
-                          selected={
-                            activeSelection?.category === "possible_gaps"
-                            && activeSelection.index === index
-                          }
-                          onSelect={() =>
-                            selectRequirement("possible_gaps", index)
-                          }
-                        />
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="comparison-empty">
-                      No possible gaps were returned.
-                    </p>
-                  )}
-                </section>
-                {comparison.needs_review.length > 0 && (
+                <div className="comparison-overview">
                   <section
-                    className="comparison-section comparison-section--review"
-                    aria-labelledby="comparison-review-heading"
+                    className="comparison-section comparison-section--matched"
+                    aria-labelledby="comparison-matches-heading"
                   >
-                    <h3 id="comparison-review-heading">Needs review</h3>
-                    <ul className="comparison-list">
-                      {comparison.needs_review.map((item, index) => (
-                        <RequirementRow
-                          key={`review-${index}`}
-                          title={item.requirement}
-                          selected={
-                            activeSelection?.category === "needs_review"
-                            && activeSelection.index === index
-                          }
-                          onSelect={() =>
-                            selectRequirement("needs_review", index)
-                          }
-                        />
-                      ))}
-                    </ul>
+                    <h3 id="comparison-matches-heading">
+                      <ComparisonStatusIcon category="matched_requirements" />
+                      Matched requirements{" "}
+                      <span className="comparison-count">
+                        {comparison.matched_requirements.length}
+                      </span>
+                    </h3>
+                    {comparison.matched_requirements.length > 0 ? (
+                      <ul className="comparison-list">
+                        {comparison.matched_requirements.map((match, index) => (
+                          <RequirementRow
+                            key={`match-${index}`}
+                            title={match.requirement}
+                            category="matched_requirements"
+                            selected={
+                              activeSelection?.category
+                                === "matched_requirements"
+                              && activeSelection.index === index
+                            }
+                            onSelect={() =>
+                              selectRequirement("matched_requirements", index)
+                            }
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="comparison-empty">
+                        No matched requirements were returned.
+                      </p>
+                    )}
                   </section>
-                )}
+                  <section
+                    className="comparison-section comparison-section--gaps"
+                    aria-labelledby="comparison-gaps-heading"
+                  >
+                    <h3 id="comparison-gaps-heading">
+                      <ComparisonStatusIcon category="possible_gaps" />
+                      Possible gaps{" "}
+                      <span className="comparison-count">
+                        {comparison.possible_gaps.length}
+                      </span>
+                    </h3>
+                    {comparison.possible_gaps.length > 0 ? (
+                      <ul className="comparison-list">
+                        {comparison.possible_gaps.map((gap, index) => (
+                          <RequirementRow
+                            key={`gap-${index}`}
+                            title={gap.requirement}
+                            category="possible_gaps"
+                            selected={
+                              activeSelection?.category === "possible_gaps"
+                              && activeSelection.index === index
+                            }
+                            onSelect={() =>
+                              selectRequirement("possible_gaps", index)
+                            }
+                          />
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="comparison-empty">
+                        No possible gaps were returned.
+                      </p>
+                    )}
+                  </section>
+                  {comparison.needs_review.length > 0 && (
+                    <section
+                      className="comparison-section comparison-section--review"
+                      aria-labelledby="comparison-review-heading"
+                    >
+                      <h3 id="comparison-review-heading">
+                        <ComparisonStatusIcon category="needs_review" />
+                        Needs review{" "}
+                        <span className="comparison-count">
+                          {comparison.needs_review.length}
+                        </span>
+                      </h3>
+                      <ul className="comparison-list">
+                        {comparison.needs_review.map((item, index) => (
+                          <RequirementRow
+                            key={`review-${index}`}
+                            title={item.requirement}
+                            category="needs_review"
+                            selected={
+                              activeSelection?.category === "needs_review"
+                              && activeSelection.index === index
+                            }
+                            onSelect={() =>
+                              selectRequirement("needs_review", index)
+                            }
+                          />
+                        ))}
+                      </ul>
+                    </section>
+                  )}
+                </div>
                 {selectedRequirement && (
                   <section
                     id="comparison-details"
                     className="comparison-details"
                     aria-labelledby="comparison-details-heading"
                   >
-                    <h3 id="comparison-details-heading">Requirement details</h3>
+                    <div className="comparison-details-header">
+                      <h3 id="comparison-details-heading">
+                        Requirement details
+                      </h3>
+                      {activeSelection && (
+                        <span
+                          className="comparison-category"
+                          data-category={activeSelection.category}
+                        >
+                          <ComparisonStatusIcon
+                            category={activeSelection.category}
+                          />
+                          {requirementCategoryLabels[activeSelection.category]}
+                        </span>
+                      )}
+                    </div>
                     <h4>{selectedRequirement.requirement}</h4>
                     {"reason" in selectedRequirement && (
                       <p className="comparison-item__reason">
