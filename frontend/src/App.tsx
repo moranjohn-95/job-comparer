@@ -60,7 +60,9 @@ type JobHistoryCache = Map<number, {
   entries: SavedComparison[];
   error: string | null;
 }>;
-type IconName = "grid" | "briefcase" | "document" | "arrows" | "login";
+type IconName =
+  | "grid" | "briefcase" | "document" | "arrows" | "login"
+  | "plus" | "arrow-right";
 type DraftProps = {
   cvFile: File | null;
   cvText: string;
@@ -101,6 +103,8 @@ function Icon({ name }: { name: IconName }): ReactNode {
     strokeWidth: 1.7,
   };
   const paths: Record<IconName, ReactNode> = {
+    plus: <path d="M12 5v14M5 12h14" />,
+    "arrow-right": <path d="M4 12h16M14 6l6 6-6 6" />,
     grid: (
       <>
         <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -968,7 +972,8 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
           className="cv-save job-primary"
           onClick={() => onSelect(entries[0].id)}
         >
-          View latest comparison
+          <span>View latest comparison</span>
+          <Icon name="arrow-right" />
         </button>
       ) : (
         <button
@@ -977,7 +982,8 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
           onClick={() => void startComparison()}
           disabled={actions.run?.pending}
         >
-          {actions.run?.pending ? "Comparing…" : "Compare with my CV"}
+          <span>{actions.run?.pending ? "Comparing…" : "Compare with my CV"}</span>
+          <Icon name="arrow-right" />
         </button>
       ))}
       {actions.run?.pending && (
@@ -1344,7 +1350,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
   }
 
   return (
-    <main className="main-content jobs-page">
+    <main className="main-content jobs-page jobs-list-page">
       <div className="jobs-heading">
         <h1>Jobs</h1>
         <button
@@ -1353,10 +1359,10 @@ function JobsView({ token, selectedJobId, onSelectJob,
           onClick={onAddJob}
           disabled={loading}
         >
+          <Icon name="plus" />
           Add job
         </button>
       </div>
-      <p className="jobs-intro">Your saved jobs, newest first.</p>
       {loading ? (
         <p role="status">Loading saved jobs…</p>
       ) : error ? (
@@ -1378,49 +1384,58 @@ function JobsView({ token, selectedJobId, onSelectJob,
       ) : jobs.length === 0 ? (
         <p className="jobs-message">You have no saved jobs yet.</p>
       ) : (
-        <ul className="saved-jobs-list" aria-label="Saved jobs">
-          {jobs.map((job) => (
-            <li key={job.id} className="saved-job-row">
-              <div className="saved-job-summary">
-                <h2>{job.title}</h2>
-                <p>{job.company_name}</p>
-                <button
-                  type="button"
-                  className="text-button job-view-button"
-                  aria-label={`View job: ${job.title} at ${job.company_name}`}
-                  onClick={() => {
-                    setCreatedJobId(null);
-                    setComparisonFromList(false);
-                    onSelectJob(job.id);
-                  }}
-                >
-                  View job
-                </button>
-              </div>
-              <SavedComparisonHistory
-                token={token}
-                job={job}
-                comparisonId={null}
-                historyCache={historyCache}
-                rowAction
-                onSelect={(id) => {
-                  setComparisonFromList(true);
-                  onSelectJob(job.id);
-                  onSelectComparison(id);
-                }}
-                actions={{
-                  run: comparisonRuns[job.id],
-                  onCompare: comparisonActions.onCompare,
-                  onShowResult: (jobId) => {
-                    setComparisonFromList(true);
-                    onSelectJob(jobId);
-                    comparisonActions.onShowResult(jobId);
-                  },
-                }}
-              />
-            </li>
-          ))}
-        </ul>
+        <div className="jobs-table">
+          <div className="jobs-table-header" aria-hidden="true">
+            <span>Job title</span>
+            <span>Company</span>
+            <span>Actions</span>
+          </div>
+          <ul className="saved-jobs-list" aria-label="Saved jobs">
+            {jobs.map((job) => (
+              <li key={job.id} className="saved-job-row">
+                <div className="saved-job-summary">
+                  <h2>{job.title}</h2>
+                  <p>{job.company_name}</p>
+                </div>
+                <div className="saved-job-actions">
+                  <button
+                    type="button"
+                    className="text-button job-view-button"
+                    aria-label={`View job: ${job.title} at ${job.company_name}`}
+                    onClick={() => {
+                      setCreatedJobId(null);
+                      setComparisonFromList(false);
+                      onSelectJob(job.id);
+                    }}
+                  >
+                    View job
+                  </button>
+                  <SavedComparisonHistory
+                    token={token}
+                    job={job}
+                    comparisonId={null}
+                    historyCache={historyCache}
+                    rowAction
+                    onSelect={(id) => {
+                      setComparisonFromList(true);
+                      onSelectJob(job.id);
+                      onSelectComparison(id);
+                    }}
+                    actions={{
+                      run: comparisonRuns[job.id],
+                      onCompare: comparisonActions.onCompare,
+                      onShowResult: (jobId) => {
+                        setComparisonFromList(true);
+                        onSelectJob(jobId);
+                        comparisonActions.onShowResult(jobId);
+                      },
+                    }}
+                  />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </main>
   );
