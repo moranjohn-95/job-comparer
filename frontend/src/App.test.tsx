@@ -587,6 +587,9 @@ const comparisonResult = {
 };
 
 function savedDraftResponse(url: string) {
+  if (url.endsWith("/comparisons")) {
+    return { ok: true, json: async () => [] };
+  }
   if (url.endsWith("/health")) {
     return { ok: true, json: async () => ({ status: "ok" }) };
   }
@@ -918,4 +921,46 @@ test("discards stale job details when switching Jobs or logging out", async () =
   finish({ ok: true, json: async () => ({ ...jobs[0], description: "Stale job" }) });
   await waitFor(() => expect(screen.queryByText("Stale job"))
     .not.toBeInTheDocument());
+});
+
+test("opens saved comparison categories and returns without comparing", async () => {
+  const job = { id: 7, title: "Researcher", company_name: "North Lab" };
+  const entry = {
+    id: 42, job_id: 7, created_at: "2026-10-06T10:30:00Z",
+    cv_outdated: false, result: comparisonResult,
+  };
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/jobs") && init?.method === "GET") {
+      return Promise.resolve({ ok: true, json: async () => [job] });
+    }
+    if (url.endsWith("/jobs/7")) {
+      return Promise.resolve({
+        ok: true, json: async () => ({ ...job, description: "Saved description" }),
+      });
+    }
+    if (url.endsWith("/comparisons")) {
+      return Promise.resolve({ ok: true, json: async () => [entry] });
+    }
+    if (url.endsWith("/comparisons/42")) {
+      return Promise.resolve({ ok: true, json: async () => entry });
+    }
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  await saveTextDraftAndLogIn();
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(await screen.findByRole("button", { name: /View job:/ }));
+  fireEvent.click(await screen.findByRole("button", { name: /View comparison:/ }));
+
+  expect(await screen.findByRole("region", { name: /Matched requirements/ }))
+    .toHaveTextContent(comparisonResult.matched_requirements[0].requirement);
+  expect(screen.getByRole("region", { name: /Possible gaps/ }))
+    .toHaveTextContent(comparisonResult.possible_gaps[0].requirement);
+  fireEvent.click(screen.getByRole("button", { name: "Back to job" }));
+  expect(screen.getByRole("heading", { name: job.title })).toBeVisible();
+  expect(fetchMock.mock.calls.filter(([url, init]) =>
+    String(url).endsWith("/compare") && init?.method === "POST",
+  )).toHaveLength(0);
 });

@@ -139,6 +139,24 @@
 .job-view-button {
   margin-top: var(--space-3);
 }
+.saved-comparisons,
+.saved-cv-notice {
+  margin-top: var(--space-5);
+}
+.saved-comparisons h2 {
+  font-size: 1rem;
+}
+.saved-comparisons li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.comparison-job-summary time {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
 .job-back {
   margin-bottom: var(--space-5);
 }
@@ -923,6 +941,10 @@ h1 {
   }
   .workspace-navigation {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .workspace-navigation > .nav-item[aria-current="page"] {
+    display: flex;
+    grid-column: 1 / -1;
   }
   .navigation > ul:last-child {
     margin-top: var(--space-2);

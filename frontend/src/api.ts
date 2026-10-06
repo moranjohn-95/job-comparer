@@ -5,6 +5,13 @@ const API_URL = 'http://127.0.0.1:8001'
 export type CurrentUser = { id: number; email: string }
 export type SavedJob = { id: number; title: string; company_name: string }
 export type JobDetails = SavedJob & { description: string }
+export type SavedComparison = {
+  id: number
+  job_id: number
+  created_at: string
+  cv_outdated: boolean
+  result: ComparisonResult
+}
 export type ComparisonResult = {
   matched_requirements: Array<{
     requirement: string
@@ -179,6 +186,10 @@ export async function compareJob(
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
   const body: unknown = await response.json()
+  return parseComparisonResult(body)
+}
+
+function parseComparisonResult(body: unknown): ComparisonResult {
   const result = body as Record<string, unknown> | null
   if (
     typeof body !== 'object' ||
@@ -210,6 +221,54 @@ export async function compareJob(
     throw new ApiError('The comparison returned an invalid result.')
   }
   return { ...body as ComparisonResult, needs_review: needsReview }
+}
+
+function parseSavedComparison(body: unknown, jobId: number): SavedComparison {
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiError('The saved comparison response was invalid.')
+  }
+  const entry = body as Record<string, unknown>
+  if (
+    typeof entry.id !== 'number' || !Number.isInteger(entry.id) ||
+    entry.job_id !== jobId || typeof entry.created_at !== 'string' ||
+    !Number.isFinite(Date.parse(entry.created_at)) ||
+    typeof entry.cv_outdated !== 'boolean'
+  ) {
+    throw new ApiError('The saved comparison response was invalid.')
+  }
+  return {
+    id: entry.id, job_id: jobId, created_at: entry.created_at,
+    cv_outdated: entry.cv_outdated, result: parseComparisonResult(entry.result),
+  }
+}
+
+export async function getSavedComparisons(
+  token: string, jobId: number, signal: AbortSignal,
+): Promise<SavedComparison[]> {
+  const response = await fetch(`${API_URL}/jobs/${jobId}/comparisons`, {
+    method: 'GET', headers: authorization(token), signal,
+  })
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  if (!Array.isArray(body)) {
+    throw new ApiError('The saved comparisons response was invalid.')
+  }
+  return body.map((entry: unknown) => parseSavedComparison(entry, jobId))
+}
+
+export async function getSavedComparison(
+  token: string, jobId: number, comparisonId: number, signal: AbortSignal,
+): Promise<SavedComparison> {
+  const response = await fetch(
+    `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
+    { method: 'GET', headers: authorization(token), signal },
+  )
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const entry = parseSavedComparison(await response.json(), jobId)
+  if (entry.id !== comparisonId) {
+    throw new ApiError('The saved comparison response was invalid.')
+  }
+  return entry
 }
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {
