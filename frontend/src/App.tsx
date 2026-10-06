@@ -14,6 +14,7 @@ import {
   createJob,
   getCurrentUser,
   getJobs,
+  getJob,
   signIn,
   signUp,
   saveCvText,
@@ -21,6 +22,7 @@ import {
   type CurrentUser,
   type ComparisonResult,
   type SavedJob,
+  type JobDetails,
 } from "./api";
 import "./App.css";
 
@@ -617,7 +619,83 @@ function ComparisonEvidence({ cv, job }: {
   );
 }
 
-function JobsView({ token }: { token: string }) {
+function JobDetailsView({ token, jobId, onBack }: {
+  token: string;
+  jobId: number;
+  onBack: () => void;
+}) {
+  const [job, setJob] = useState<JobDetails | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void getJob(token, jobId, controller.signal).then(
+      (result) => {
+        if (!active) return;
+        setJob(result);
+        setLoading(false);
+      },
+      (caught: unknown) => {
+        if (!active) return;
+        setError(caught instanceof ApiError
+          ? caught.message
+          : "Unable to load this job. Please try again.");
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [token, jobId, attempt]);
+
+  return (
+    <main className="main-content jobs-page">
+      <button type="button" className="text-button job-back" onClick={onBack}>
+        Back to jobs
+      </button>
+      <h1>{job?.title ?? "Job details"}</h1>
+      {loading ? (
+        <p role="status">Loading job details…</p>
+      ) : error || !job ? (
+        <div className="jobs-message job-detail-message">
+          <p role="alert">
+            {error ? `Could not load job: ${error}`
+              : "This job was not found or is no longer available to you."}
+          </p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setLoading(true);
+              setError(null);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : (
+        <>
+          <p className="jobs-intro">{job.company_name}</p>
+          <section className="saved-job-description" aria-label="Job description">
+            <h2>Job description</h2>
+            <p>{job.description}</p>
+          </section>
+        </>
+      )}
+    </main>
+  );
+}
+
+function JobsView({ token, selectedJobId, onSelectJob }: {
+  token: string;
+  selectedJobId: number | null;
+  onSelectJob: (id: number | null) => void;
+}) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -645,6 +723,17 @@ function JobsView({ token }: { token: string }) {
       controller.abort();
     };
   }, [token, attempt]);
+
+  if (selectedJobId !== null) {
+    return (
+      <JobDetailsView
+        key={selectedJobId}
+        token={token}
+        jobId={selectedJobId}
+        onBack={() => onSelectJob(null)}
+      />
+    );
+  }
 
   return (
     <main className="main-content jobs-page">
@@ -676,6 +765,14 @@ function JobsView({ token }: { token: string }) {
             <li key={job.id}>
               <h2>{job.title}</h2>
               <p>{job.company_name}</p>
+              <button
+                type="button"
+                className="text-button job-view-button"
+                aria-label={`View job: ${job.title} at ${job.company_name}`}
+                onClick={() => onSelectJob(job.id)}
+              >
+                View job
+              </button>
             </li>
           ))}
         </ul>
@@ -709,6 +806,7 @@ function App() {
     useState<RequirementSelection | null>(null);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [isComparing, setIsComparing] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const isPersistingRef = useRef(false);
   const isComparingRef = useRef(false);
   const firstCategory = (
@@ -748,6 +846,7 @@ function App() {
       const nextUser = await getCurrentUser(nextToken);
       setToken(nextToken);
       setUser(nextUser);
+      setSelectedJobId(null);
       if (isSavingDraft) {
         await saveAuthenticatedDraft(nextToken);
       } else {
@@ -894,6 +993,7 @@ function App() {
     setView("signup");
   }
   function logout() {
+    setSelectedJobId(null);
     setToken(null);
     setUser(null);
     setView("home");
@@ -978,7 +1078,10 @@ function App() {
                 className="nav-button"
                 aria-current={view === "jobs" ? "page" : undefined}
                 onClick={() => {
-                  if (token && user) setView("jobs");
+                  if (token && user) {
+                    setSelectedJobId(null);
+                    setView("jobs");
+                  }
                   else openLogin();
                 }}
               >
@@ -1024,7 +1127,12 @@ function App() {
         </div>
       </aside>
       {view === "jobs" && token && user ? (
-        <JobsView key={`${user.id}:${token}`} token={token} />
+        <JobsView
+          key={`${user.id}:${token}`}
+          token={token}
+          selectedJobId={selectedJobId}
+          onSelectJob={setSelectedJobId}
+        />
       ) : (
         <main
           className={comparison

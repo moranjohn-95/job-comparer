@@ -4,6 +4,7 @@ const API_URL = 'http://127.0.0.1:8001'
 
 export type CurrentUser = { id: number; email: string }
 export type SavedJob = { id: number; title: string; company_name: string }
+export type JobDetails = SavedJob & { description: string }
 export type ComparisonResult = {
   matched_requirements: Array<{
     requirement: string
@@ -136,6 +137,36 @@ export async function getJobs(
     }
     return { id: job.id, title: job.title, company_name: job.company_name }
   })
+}
+
+export async function getJob(
+  token: string,
+  jobId: number,
+  signal: AbortSignal,
+): Promise<JobDetails | null> {
+  const response = await fetch(`${API_URL}/jobs/${jobId}`, {
+    method: 'GET',
+    headers: authorization(token),
+    signal,
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  if (typeof body !== 'object' || body === null) {
+    throw new ApiError('The job response was invalid. Please try again.')
+  }
+  const job = body as Record<string, unknown>
+  if (
+    job.id !== jobId || typeof job.title !== 'string' ||
+    typeof job.company_name !== 'string' ||
+    typeof job.description !== 'string'
+  ) {
+    throw new ApiError('The job response was invalid. Please try again.')
+  }
+  return {
+    id: jobId, title: job.title,
+    company_name: job.company_name, description: job.description,
+  }
 }
 
 export async function compareJob(

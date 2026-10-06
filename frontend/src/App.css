@@ -136,6 +136,31 @@
 .jobs-message p {
   margin: 0 0 var(--space-3);
 }
+.job-view-button {
+  margin-top: var(--space-3);
+}
+.job-back {
+  margin-bottom: var(--space-5);
+}
+.job-detail-message {
+  margin-top: var(--space-5);
+}
+.saved-job-description {
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+.saved-job-description h2 {
+  margin: 0 0 var(--space-4);
+  font-size: 1rem;
+}
+.saved-job-description p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+}
 .account-email {
   overflow: hidden;
   margin: auto var(--space-3) var(--space-3);

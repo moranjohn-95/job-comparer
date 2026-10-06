@@ -761,7 +761,20 @@ test("loads Jobs in API order and retries errors including expired auth", async 
     { id: 2, title: "Technician", company_name: "South Lab" },
   ];
   let attempts = 0;
+  let detailAttempts = 0;
+  const description = "First paragraph.\n\nSecond paragraph.\nAnother line.";
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/jobs/9")) {
+      expect(init).toMatchObject({
+        method: "GET", headers: { Authorization: "Bearer token" },
+      });
+      detailAttempts += 1;
+      return Promise.resolve(detailAttempts === 1
+        ? { ok: false, json: async () => ({ detail: "Invalid or expired token" }) }
+        : detailAttempts === 2
+          ? { ok: false, status: 404 }
+          : { ok: true, json: async () => ({ ...jobs[0], description }) });
+    }
     if (String(input).endsWith("/jobs") && init?.method === "GET") {
       expect(init.headers).toEqual({ Authorization: "Bearer token" });
       attempts += 1;
@@ -786,7 +799,24 @@ test("loads Jobs in API order and retries errors including expired auth", async 
   expect([...list.querySelectorAll("h2")].map((node) => node.textContent))
     .toEqual(jobs.map((job) => job.title));
   expect(screen.getByText("North Lab")).toBeVisible();
-  expect(list.querySelector("button, a")).toBeNull();
+  fireEvent.click(screen.getByRole("button", {
+    name: "View job: Researcher at North Lab",
+  }));
+  expect(screen.getByText("Loading job details…")).toBeVisible();
+  expect(await screen.findByRole("alert"))
+    .toHaveTextContent("Invalid or expired token");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  expect(await screen.findByRole("alert"))
+    .toHaveTextContent("This job was not found");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  const details = await screen.findByRole("region", { name: "Job description" });
+  expect(details.querySelector("p")?.textContent).toBe(description);
+  expect(screen.getByRole("heading", { name: "Researcher", level: 1 }))
+    .toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
+  expect(screen.getByRole("list", { name: "Saved jobs" }).textContent)
+    .toBe(list.textContent);
+  expect(attempts).toBe(2);
   expect(screen.getByRole("button", { name: "Jobs" }))
     .toHaveAttribute("aria-current", "page");
   fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
@@ -843,4 +873,49 @@ test("discards a pending Jobs response after logout and another login", async ()
   expect(await screen.findByText("You have no saved jobs yet."))
     .toBeVisible();
   expect(screen.queryByText("Previous account job")).not.toBeInTheDocument();
+});
+
+test("discards stale job details when switching Jobs or logging out", async () => {
+  const jobs = [
+    { id: 9, title: "Researcher", company_name: "North Lab" },
+    { id: 2, title: "Technician", company_name: "South Lab" },
+  ];
+  let finish!: (value: unknown) => void;
+  let signal: AbortSignal | undefined;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith("/jobs")) {
+      return Promise.resolve({ ok: true, json: async () => jobs });
+    }
+    if (url.endsWith("/jobs/9")) {
+      signal = init?.signal as AbortSignal;
+      return new Promise((resolve) => { finish = resolve; });
+    }
+    if (url.endsWith("/jobs/2")) {
+      return Promise.resolve({
+        ok: true, json: async () => ({ ...jobs[1], description: "Current job" }),
+      });
+    }
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Dashboard" });
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(await screen.findByRole("button", { name: /View job: Researcher/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(signal?.aborted).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: /View job: Technician/ }));
+  finish({ ok: true, json: async () => ({ ...jobs[0], description: "Stale job" }) });
+  expect(await screen.findByText("Current job")).toBeVisible();
+  expect(screen.queryByText("Stale job")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
+  fireEvent.click(screen.getByRole("button", { name: /View job: Researcher/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+  expect(signal?.aborted).toBe(true);
+  finish({ ok: true, json: async () => ({ ...jobs[0], description: "Stale job" }) });
+  await waitFor(() => expect(screen.queryByText("Stale job"))
+    .not.toBeInTheDocument());
 });
