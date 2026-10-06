@@ -30,7 +30,7 @@ import {
 import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
-type View = "home" | "dashboard" | "jobs" | "login" | "signup";
+type View = "home" | "dashboard" | "jobs" | "add-job" | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
 type RequirementCategory =
@@ -62,6 +62,7 @@ type DraftProps = {
 const MAX_CV_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_JOB_TITLE_LENGTH = 200;
 const MAX_JOB_COMPANY_LENGTH = 200;
+const MAX_JOB_DESCRIPTION_LENGTH = 20_000;
 const statusText: Record<ConnectionStatus, string> = {
   checking: "Checking API",
   connected: "API connected",
@@ -924,12 +925,13 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
 }
 
 function JobDetailsView({ token, jobId, onBack,
-  comparisonId, onSelectComparison }: {
+  comparisonId, onSelectComparison, successMessage }: {
   token: string;
   jobId: number;
   onBack: () => void;
   comparisonId: number | null;
   onSelectComparison: (id: number | null) => void;
+  successMessage?: string;
 }) {
   const [job, setJob] = useState<JobDetails | null>(null);
   const [loading, setLoading] = useState(true);
@@ -976,6 +978,9 @@ function JobDetailsView({ token, jobId, onBack,
         Back to jobs
       </button>
       <h1>{job?.title ?? "Job details"}</h1>
+      {successMessage && (
+        <p className="job-saved-notice" role="status">{successMessage}</p>
+      )}
       {loading ? (
         <p role="status">Loading job details…</p>
       ) : error || !job ? (
@@ -1015,18 +1020,139 @@ function JobDetailsView({ token, jobId, onBack,
   );
 }
 
+function AddJobForm({ token, onCancel, onSaved }: {
+  token: string;
+  onCancel: () => void;
+  onSaved: (job: SavedJob) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [company, setCompany] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+
+  useEffect(() => () => request.current?.abort(), []);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (request.current) return;
+    if (!title.trim() || !company.trim() || !description.trim()) {
+      setError("Enter a job title, company name and description, not just spaces.");
+      return;
+    }
+    if (
+      title.length > MAX_JOB_TITLE_LENGTH ||
+      company.length > MAX_JOB_COMPANY_LENGTH
+    ) {
+      setError("Job title and company name must each be 200 characters or fewer.");
+      return;
+    }
+    if (description.length > MAX_JOB_DESCRIPTION_LENGTH) {
+      setError("Job description must be 20,000 characters or fewer.");
+      return;
+    }
+    const controller = new AbortController();
+    request.current = controller;
+    setSaving(true);
+    setError(null);
+    try {
+      const job = await createJob(token, {
+        title: title.trim(), company_name: company.trim(), description,
+      }, controller.signal);
+      if (!controller.signal.aborted) onSaved(job);
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        setError(caught instanceof ApiError
+          ? caught.message
+          : "Unable to save this job. Your entries are still here; try again.");
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        request.current = null;
+        setSaving(false);
+      }
+    }
+  }
+
+  return (
+    <main className="main-content jobs-page">
+      <h1 id="add-job-heading">Add job</h1>
+      <form
+        className="job-description workspace-job-form"
+        aria-labelledby="add-job-heading"
+        onSubmit={submit}
+      >
+        <div className="job-details">
+          <div>
+            <label htmlFor="new-job-title">Job title</label>
+            <input
+              id="new-job-title"
+              value={title}
+              onChange={(event) => setTitle(event.target.value)}
+              maxLength={MAX_JOB_TITLE_LENGTH}
+              required
+              disabled={saving}
+            />
+          </div>
+          <div>
+            <label htmlFor="new-company-name">Company name</label>
+            <input
+              id="new-company-name"
+              value={company}
+              onChange={(event) => setCompany(event.target.value)}
+              maxLength={MAX_JOB_COMPANY_LENGTH}
+              required
+              disabled={saving}
+            />
+          </div>
+        </div>
+        <label htmlFor="new-job-description">Job description</label>
+        <textarea
+          id="new-job-description"
+          value={description}
+          onChange={(event) => setDescription(event.target.value)}
+          maxLength={MAX_JOB_DESCRIPTION_LENGTH}
+          rows={10}
+          required
+          disabled={saving}
+        />
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="cv-starter__actions job-form-actions">
+          <button
+            type="button"
+            className="text-button"
+            onClick={onCancel}
+            disabled={saving}
+          >
+            Cancel
+          </button>
+          <button type="submit" className="cv-save job-primary" disabled={saving}>
+            {saving ? "Saving…" : "Save job"}
+          </button>
+        </div>
+        {saving && <p role="status">Saving your job…</p>}
+      </form>
+    </main>
+  );
+}
+
 function JobsView({ token, selectedJobId, onSelectJob,
-  comparisonId, onSelectComparison }: {
+  comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs }: {
   token: string;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
   comparisonId: number | null;
   onSelectComparison: (id: number | null) => void;
+  addingJob: boolean;
+  onAddJob: () => void;
+  onShowJobs: () => void;
 }) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [createdJobId, setCreatedJobId] = useState<number | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1051,22 +1177,54 @@ function JobsView({ token, selectedJobId, onSelectJob,
     };
   }, [token, attempt]);
 
+  if (addingJob) {
+    return (
+      <AddJobForm
+        token={token}
+        onCancel={onShowJobs}
+        onSaved={(job) => {
+          setJobs((current) => [
+            job, ...current.filter((item) => item.id !== job.id),
+          ]);
+          setError(null);
+          setCreatedJobId(job.id);
+          onSelectJob(job.id);
+          onShowJobs();
+        }}
+      />
+    );
+  }
+
   if (selectedJobId !== null) {
     return (
       <JobDetailsView
         key={selectedJobId}
         token={token}
         jobId={selectedJobId}
-        onBack={() => onSelectJob(null)}
+        onBack={() => {
+          setCreatedJobId(null);
+          onSelectJob(null);
+        }}
         comparisonId={comparisonId}
         onSelectComparison={onSelectComparison}
+        successMessage={createdJobId === selectedJobId ? "Job saved." : undefined}
       />
     );
   }
 
   return (
     <main className="main-content jobs-page">
-      <h1>Jobs</h1>
+      <div className="jobs-heading">
+        <h1>Jobs</h1>
+        <button
+          type="button"
+          className="cv-save job-primary"
+          onClick={onAddJob}
+          disabled={loading}
+        >
+          Add job
+        </button>
+      </div>
       <p className="jobs-intro">Your saved jobs, newest first.</p>
       {loading ? (
         <p role="status">Loading saved jobs…</p>
@@ -1098,7 +1256,10 @@ function JobsView({ token, selectedJobId, onSelectJob,
                 type="button"
                 className="text-button job-view-button"
                 aria-label={`View job: ${job.title} at ${job.company_name}`}
-                onClick={() => onSelectJob(job.id)}
+                onClick={() => {
+                  setCreatedJobId(null);
+                  onSelectJob(job.id);
+                }}
               >
                 View job
               </button>
@@ -1391,7 +1552,8 @@ function App() {
               <button
                 type="button"
                 className="nav-button"
-                aria-current={view === "jobs" && savedComparisonId === null
+                aria-current={(view === "jobs" || view === "add-job")
+                  && savedComparisonId === null
                   ? "page" : undefined}
                 onClick={() => {
                   if (token && user) {
@@ -1448,7 +1610,7 @@ function App() {
           <span>{statusText[status]}</span>
         </div>
       </aside>
-      {view === "jobs" && token && user ? (
+      {(view === "jobs" || view === "add-job") && token && user ? (
         <JobsView
           key={`${user.id}:${token}`}
           token={token}
@@ -1456,6 +1618,9 @@ function App() {
           onSelectJob={setSelectedJobId}
           comparisonId={savedComparisonId}
           onSelectComparison={setSavedComparisonId}
+          addingJob={view === "add-job"}
+          onAddJob={() => setView("add-job")}
+          onShowJobs={() => setView("jobs")}
         />
       ) : (
         <main

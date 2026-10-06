@@ -90,11 +90,13 @@ export async function uploadCv(token: string, file: File): Promise<void> {
 export async function createJob(
   token: string,
   job: { title: string; company_name: string; description: string },
+  signal?: AbortSignal,
 ): Promise<SavedJob> {
   const response = await fetch(`${API_URL}/jobs`, {
     method: 'POST',
     headers: { ...authorization(token), 'Content-Type': 'application/json' },
     body: JSON.stringify(job),
+    signal,
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
   const body: unknown = await response.json()

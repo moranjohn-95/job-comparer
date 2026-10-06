@@ -106,6 +106,36 @@
   margin: var(--space-2) 0 var(--space-5);
   color: var(--color-text-muted);
 }
+.jobs-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.jobs-page .job-primary {
+  width: auto;
+  flex-shrink: 0;
+}
+.jobs-page .job-primary:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.job-description.workspace-job-form {
+  background: var(--color-surface);
+}
+.workspace-job-form .job-form-actions {
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-5);
+}
+.job-saved-notice {
+  color: var(--color-accent-deep);
+}
+@media (max-width: 720px) {
+  .workspace-job-form .job-details {
+    grid-template-columns: 1fr;
+  }
+}
 .saved-jobs-list,
 .jobs-message {
   margin: 0;
