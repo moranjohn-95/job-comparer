@@ -27,6 +27,15 @@ type ConnectionStatus = "checking" | "connected" | "unavailable";
 type View = "home" | "dashboard" | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
+type RequirementCategory =
+  | "matched_requirements"
+  | "possible_gaps"
+  | "needs_review";
+type RequirementSelection = {
+  comparison: ComparisonResult;
+  category: RequirementCategory;
+  index: number;
+};
 type IconName = "grid" | "briefcase" | "document" | "arrows" | "login";
 type DraftProps = {
   cvFile: File | null;
@@ -512,6 +521,31 @@ function HomeView({
   );
 }
 
+function RequirementRow({ title, selected, onSelect }: {
+  title: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <li className="comparison-item">
+      <button
+        type="button"
+        className="comparison-option"
+        aria-pressed={selected}
+        aria-controls="comparison-details"
+        onClick={onSelect}
+      >
+        <span>{title}</span>
+        {selected && (
+          <span className="comparison-option__selected" aria-hidden="true">
+            Selected
+          </span>
+        )}
+      </button>
+    </li>
+  );
+}
+
 function ComparisonEvidence({ cv, job }: {
   cv?: string | null;
   job: string;
@@ -553,10 +587,30 @@ function App() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedJob, setSavedJob] = useState<SavedJob | null>(null);
   const [comparison, setComparison] = useState<ComparisonResult | null>(null);
+  const [requirementSelection, setRequirementSelection] =
+    useState<RequirementSelection | null>(null);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [isComparing, setIsComparing] = useState(false);
   const isPersistingRef = useRef(false);
   const isComparingRef = useRef(false);
+  const firstCategory = (
+    ["matched_requirements", "possible_gaps", "needs_review"] as const
+  ).find((category) => comparison && comparison[category].length > 0);
+  const activeSelection = comparison && firstCategory
+    ? requirementSelection?.comparison === comparison
+      ? requirementSelection
+      : { comparison, category: firstCategory, index: 0 }
+    : null;
+  const selectedRequirement = activeSelection
+    ? activeSelection.comparison[activeSelection.category][activeSelection.index]
+    : null;
+
+  function selectRequirement(category: RequirementCategory, index: number) {
+    if (comparison) {
+      setRequirementSelection({ comparison, category, index });
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -885,17 +939,18 @@ function App() {
                   <h3 id="comparison-matches-heading">Matched requirements</h3>
                   {comparison.matched_requirements.length > 0 ? (
                     <ul className="comparison-list">
-                      {comparison.matched_requirements.map((match) => (
-                        <li
-                          className="comparison-item"
-                          key={`${match.requirement}-${match.cv_evidence}`}
-                        >
-                          <h4>{match.requirement}</h4>
-                          <ComparisonEvidence
-                            cv={match.cv_evidence}
-                            job={match.job_evidence}
-                          />
-                        </li>
+                      {comparison.matched_requirements.map((match, index) => (
+                        <RequirementRow
+                          key={`match-${index}`}
+                          title={match.requirement}
+                          selected={
+                            activeSelection?.category === "matched_requirements"
+                            && activeSelection.index === index
+                          }
+                          onSelect={() =>
+                            selectRequirement("matched_requirements", index)
+                          }
+                        />
                       ))}
                     </ul>
                   ) : (
@@ -911,14 +966,18 @@ function App() {
                   <h3 id="comparison-gaps-heading">Possible gaps</h3>
                   {comparison.possible_gaps.length > 0 ? (
                     <ul className="comparison-list">
-                      {comparison.possible_gaps.map((gap) => (
-                        <li
-                          className="comparison-item"
-                          key={`${gap.requirement}-${gap.job_evidence}`}
-                        >
-                          <h4>{gap.requirement}</h4>
-                          <ComparisonEvidence job={gap.job_evidence} />
-                        </li>
+                      {comparison.possible_gaps.map((gap, index) => (
+                        <RequirementRow
+                          key={`gap-${index}`}
+                          title={gap.requirement}
+                          selected={
+                            activeSelection?.category === "possible_gaps"
+                            && activeSelection.index === index
+                          }
+                          onSelect={() =>
+                            selectRequirement("possible_gaps", index)
+                          }
+                        />
                       ))}
                     </ul>
                   ) : (
@@ -934,22 +993,41 @@ function App() {
                   >
                     <h3 id="comparison-review-heading">Needs review</h3>
                     <ul className="comparison-list">
-                      {comparison.needs_review.map((item) => (
-                        <li
-                          className="comparison-item"
-                          key={`${item.requirement}-${item.job_evidence}`}
-                        >
-                          <h4>{item.requirement}</h4>
-                          <p className="comparison-item__reason">
-                            {item.reason}
-                          </p>
-                          <ComparisonEvidence
-                            cv={item.cv_evidence}
-                            job={item.job_evidence}
-                          />
-                        </li>
+                      {comparison.needs_review.map((item, index) => (
+                        <RequirementRow
+                          key={`review-${index}`}
+                          title={item.requirement}
+                          selected={
+                            activeSelection?.category === "needs_review"
+                            && activeSelection.index === index
+                          }
+                          onSelect={() =>
+                            selectRequirement("needs_review", index)
+                          }
+                        />
                       ))}
                     </ul>
+                  </section>
+                )}
+                {selectedRequirement && (
+                  <section
+                    id="comparison-details"
+                    className="comparison-details"
+                    aria-labelledby="comparison-details-heading"
+                  >
+                    <h3 id="comparison-details-heading">Requirement details</h3>
+                    <h4>{selectedRequirement.requirement}</h4>
+                    {"reason" in selectedRequirement && (
+                      <p className="comparison-item__reason">
+                        {selectedRequirement.reason}
+                      </p>
+                    )}
+                    <ComparisonEvidence
+                      cv={"cv_evidence" in selectedRequirement
+                        ? selectedRequirement.cv_evidence
+                        : undefined}
+                      job={selectedRequirement.job_evidence}
+                    />
                   </section>
                 )}
                 <p className="comparison-notice">

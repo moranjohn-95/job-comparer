@@ -617,6 +617,7 @@ async function saveTextDraftAndLogIn() {
 }
 
 test("shows evidence-based comparison results only after Compare is clicked", async () => {
+  let comparisonCount = 0;
   const needsReview = {
     requirement: "Emergency response certification",
     reason: "The listed training does not establish the required certification.",
@@ -626,6 +627,7 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/jobs/7/compare")) {
+      comparisonCount += 1;
       expect(init).toMatchObject({
         method: "POST",
         headers: { Authorization: "Bearer token" },
@@ -634,6 +636,12 @@ test("shows evidence-based comparison results only after Compare is clicked", as
         ok: true,
         json: async () => ({
           ...comparisonResult,
+          matched_requirements: comparisonCount === 1
+            ? comparisonResult.matched_requirements
+            : [],
+          possible_gaps: comparisonCount < 3
+            ? comparisonResult.possible_gaps
+            : [],
           needs_review: [needsReview],
         }),
       });
@@ -648,15 +656,35 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   expect(await screen.findByText("Comparison results")).toBeVisible();
   expect(screen.getByText("Built TypeScript web applications."))
     .toBeVisible();
+  const matchRow = screen.getByRole("button", { name: "TypeScript" });
+  expect(matchRow).toHaveAttribute("aria-pressed", "true");
+  expect(matchRow).toHaveAttribute("type", "button");
+  const requestsBeforeSelection = fetchMock.mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Kubernetes" }));
+  expect(matchRow).toHaveAttribute("aria-pressed", "false");
   expect(screen.getByText("Operate services on Kubernetes.")).toBeVisible();
+  expect(screen.queryByText("Built TypeScript web applications."))
+    .not.toBeInTheDocument();
   expect(screen.getByRole("heading", { name: "Needs review" })).toBeVisible();
-  expect(screen.getByText(needsReview.requirement)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: needsReview.requirement }));
   expect(screen.getByText(needsReview.reason)).toBeVisible();
   expect(screen.getByText(needsReview.cv_evidence))
     .toBeVisible();
   expect(screen.getByText(needsReview.job_evidence))
     .toBeVisible();
   expect(screen.getByText(comparisonResult.interpretation)).toBeVisible();
+  expect(fetchMock.mock.calls).toHaveLength(requestsBeforeSelection);
+  expect(screen.getAllByRole("region", { name: "Requirement details" }))
+    .toHaveLength(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("button", {
+    name: "Kubernetes", pressed: true,
+  })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("button", {
+    name: needsReview.requirement, pressed: true,
+  })).toBeVisible();
 });
 
 test("disables Compare while a comparison request is running", async () => {
