@@ -131,9 +131,37 @@
 .job-saved-notice {
   color: var(--color-accent-deep);
 }
+.job-comparison-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.job-comparison-action .job-primary {
+  max-width: 100%;
+  white-space: normal;
+}
+.saved-job-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 18rem);
+  align-items: center;
+  gap: var(--space-4);
+}
+.saved-job-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 720px) {
-  .workspace-job-form .job-details {
+  .workspace-job-form .job-details,
+  .saved-job-row {
     grid-template-columns: 1fr;
+  }
+  .job-comparison-action {
+    align-items: flex-start;
+    text-align: left;
   }
 }
 .saved-jobs-list,

@@ -42,6 +42,24 @@ type RequirementSelection = {
   category: RequirementCategory;
   index: number;
 };
+type ComparisonRun = {
+  pending: boolean;
+  result: ComparisonResult | null;
+  error: string | null;
+  version: number;
+};
+type ComparisonOutcome = { result: ComparisonResult } | { error: string };
+type JobComparisonActions = {
+  run?: ComparisonRun;
+  currentResult?: ComparisonResult;
+  onCompare: (jobId: number) => Promise<ComparisonOutcome | null>;
+  onShowResult: (jobId: number) => void;
+};
+type JobHistoryCache = Map<number, {
+  version: number;
+  entries: SavedComparison[];
+  error: string | null;
+}>;
 type IconName = "grid" | "briefcase" | "document" | "arrows" | "login";
 type DraftProps = {
   cvFile: File | null;
@@ -796,18 +814,40 @@ function ComparisonResults({ comparison, requirementSelection,
   );
 }
 
-function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
+function SavedComparisonHistory({ token, job, comparisonId, onSelect,
+  actions, historyCache, rowAction = false, backLabel = "Back to job" }: {
   token: string;
-  job: JobDetails;
+  job: SavedJob;
   comparisonId: number | null;
   onSelect: (id: number | null) => void;
+  actions: JobComparisonActions;
+  historyCache: JobHistoryCache;
+  rowAction?: boolean;
+  backLabel?: string;
 }) {
-  const [entries, setEntries] = useState<SavedComparison[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const historyVersion = actions.run?.version ?? 0;
+  const cached = comparisonId === null && !actions.currentResult
+    && historyCache.get(job.id)?.version === historyVersion
+    ? historyCache.get(job.id) : undefined;
+  const [entries, setEntries] = useState<SavedComparison[]>(
+    cached?.entries ?? [],
+  );
+  const [loading, setLoading] = useState(!cached);
+  const [error, setError] = useState<string | null>(cached?.error ?? null);
   const [attempt, setAttempt] = useState(0);
   const [selection, setSelection] = useState<RequirementSelection | null>(null);
+  const [loadedVersion, setLoadedVersion] = useState(historyVersion);
+  const currentResult = actions.currentResult;
+  const historyLoading = loading || loadedVersion !== historyVersion;
+  const active = useRef(false);
   useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; };
+  }, []);
+  useEffect(() => {
+    if (currentResult) return;
+    if (comparisonId === null && attempt === 0
+      && historyCache.get(job.id)?.version === historyVersion) return;
     const controller = new AbortController();
     let active = true;
     const request = comparisonId === null
@@ -817,14 +857,28 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
     void request.then(
       (result) => {
         if (!active) return;
+        if (comparisonId === null) {
+          historyCache.set(job.id, {
+            version: historyVersion, entries: result, error: null,
+          });
+        }
         setEntries(result);
+        setError(null);
+        setLoadedVersion(historyVersion);
         setLoading(false);
       },
       (caught: unknown) => {
         if (!active) return;
-        setError(caught instanceof ApiError
+        const message = caught instanceof ApiError
           ? caught.message
-          : "Unable to load saved comparisons. Please try again.");
+          : "Unable to load saved comparisons. Please try again.";
+        if (comparisonId === null) {
+          historyCache.set(job.id, {
+            version: historyVersion, entries: [], error: message,
+          });
+        }
+        setError(message);
+        setLoadedVersion(historyVersion);
         setLoading(false);
       },
     );
@@ -832,8 +886,16 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
       active = false;
       controller.abort();
     };
-  }, [token, job.id, comparisonId, attempt]);
-  const progress = loading ? (
+  }, [token, job.id, comparisonId, attempt, historyVersion, currentResult,
+    historyCache]);
+
+  async function startComparison() {
+    const outcome = await actions.onCompare(job.id);
+    if (outcome && "result" in outcome && active.current) {
+      actions.onShowResult(job.id);
+    }
+  }
+  const progress = !currentResult && historyLoading ? (
     <p role="status">Loading saved comparisons…</p>
   ) : error ? (
     <div className="jobs-message">
@@ -852,8 +914,9 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
       </button>
     </div>
   ) : null;
-  if (comparisonId !== null) {
+  if (comparisonId !== null || currentResult) {
     const entry = entries[0];
+    const result = currentResult ?? entry?.result;
     return (
       <main className="main-content main-content--comparison">
         <button
@@ -861,9 +924,11 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
           className="text-button job-back"
           onClick={() => onSelect(null)}
         >
-          Back to job
+          {backLabel}
         </button>
-        <h1 id="comparison-heading">Saved comparison</h1>
+        <h1 id="comparison-heading">
+          {currentResult ? "Comparison results" : "Saved comparison"}
+        </h1>
         <div className="comparison-job-bar">
           <div className="comparison-job-summary">
             <h2>{job.title}</h2>
@@ -876,16 +941,16 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
           </div>
         </div>
         {progress}
-        {entry && (
+        {result && (
           <>
-            {entry.cv_outdated && (
+            {entry?.cv_outdated && (
               <p className="comparison-notice saved-cv-notice" role="status">
                 The CV used for this comparison is no longer the current
                 saved CV.
               </p>
             )}
             <ComparisonResults
-              comparison={entry.result}
+              comparison={result}
               requirementSelection={selection}
               setRequirementSelection={setSelection}
             />
@@ -894,6 +959,35 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
       </main>
     );
   }
+  if (rowAction) return (
+    <div className="job-comparison-action">
+      {progress}
+      {!historyLoading && !error && (entries.length > 0 ? (
+        <button
+          type="button"
+          className="cv-save job-primary"
+          onClick={() => onSelect(entries[0].id)}
+        >
+          View latest comparison
+        </button>
+      ) : (
+        <button
+          type="button"
+          className="cv-save job-primary"
+          onClick={() => void startComparison()}
+          disabled={actions.run?.pending}
+        >
+          {actions.run?.pending ? "Comparing…" : "Compare with my CV"}
+        </button>
+      ))}
+      {actions.run?.pending && (
+        <p role="status">Comparing your CV and job…</p>
+      )}
+      {actions.run?.error && (
+        <p role="alert">Comparison unavailable: {actions.run.error}</p>
+      )}
+    </div>
+  );
   return (
     <section className="saved-comparisons" aria-labelledby="history-heading">
       <h2 id="history-heading">Saved comparisons</h2>
@@ -925,13 +1019,16 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect }: {
 }
 
 function JobDetailsView({ token, jobId, onBack,
-  comparisonId, onSelectComparison, successMessage }: {
+  comparisonId, onSelectComparison, successMessage, comparisonActions,
+  historyCache }: {
   token: string;
   jobId: number;
   onBack: () => void;
   comparisonId: number | null;
   onSelectComparison: (id: number | null) => void;
   successMessage?: string;
+  comparisonActions: JobComparisonActions;
+  historyCache: JobHistoryCache;
 }) {
   const [job, setJob] = useState<JobDetails | null>(null);
   const [loading, setLoading] = useState(true);
@@ -961,14 +1058,16 @@ function JobDetailsView({ token, jobId, onBack,
     };
   }, [token, jobId, attempt]);
 
-  if (job && comparisonId !== null) {
+  if (job && (comparisonId !== null || comparisonActions.currentResult)) {
     return (
       <SavedComparisonHistory
-        key={comparisonId}
+        key={comparisonId ?? "current"}
         token={token}
         job={job}
         comparisonId={comparisonId}
         onSelect={onSelectComparison}
+        actions={comparisonActions}
+        historyCache={historyCache}
       />
     );
   }
@@ -1004,7 +1103,10 @@ function JobDetailsView({ token, jobId, onBack,
       ) : (
         <>
           <p className="jobs-intro">{job.company_name}</p>
-          <section className="saved-job-description" aria-label="Job description">
+          <section
+            className="saved-job-description"
+            aria-label="Job description"
+          >
             <h2>Job description</h2>
             <p>{job.description}</p>
           </section>
@@ -1013,6 +1115,8 @@ function JobDetailsView({ token, jobId, onBack,
             job={job}
             comparisonId={null}
             onSelect={onSelectComparison}
+            actions={comparisonActions}
+            historyCache={historyCache}
           />
         </>
       )}
@@ -1138,7 +1242,8 @@ function AddJobForm({ token, onCancel, onSaved }: {
 }
 
 function JobsView({ token, selectedJobId, onSelectJob,
-  comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs }: {
+  comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs,
+  comparisonActions, comparisonRuns }: {
   token: string;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
@@ -1147,12 +1252,16 @@ function JobsView({ token, selectedJobId, onSelectJob,
   addingJob: boolean;
   onAddJob: () => void;
   onShowJobs: () => void;
+  comparisonActions: JobComparisonActions;
+  comparisonRuns: Record<number, ComparisonRun>;
 }) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [createdJobId, setCreatedJobId] = useState<number | null>(null);
+  const [comparisonFromList, setComparisonFromList] = useState(false);
+  const [historyCache] = useState<JobHistoryCache>(() => new Map());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1195,6 +1304,26 @@ function JobsView({ token, selectedJobId, onSelectJob,
     );
   }
 
+  const selectedJob = jobs.find((job) => job.id === selectedJobId);
+  if (comparisonFromList && selectedJob
+    && (comparisonId !== null || comparisonActions.currentResult)) {
+    return (
+      <SavedComparisonHistory
+        key={`${selectedJob.id}:${comparisonId ?? "current"}`}
+        token={token}
+        job={selectedJob}
+        comparisonId={comparisonId}
+        actions={comparisonActions}
+        historyCache={historyCache}
+        backLabel="Back to jobs"
+        onSelect={() => {
+          onSelectComparison(null);
+          onSelectJob(null);
+          setComparisonFromList(false);
+        }}
+      />
+    );
+  }
   if (selectedJobId !== null) {
     return (
       <JobDetailsView
@@ -1208,6 +1337,8 @@ function JobsView({ token, selectedJobId, onSelectJob,
         comparisonId={comparisonId}
         onSelectComparison={onSelectComparison}
         successMessage={createdJobId === selectedJobId ? "Job saved." : undefined}
+        comparisonActions={comparisonActions}
+        historyCache={historyCache}
       />
     );
   }
@@ -1249,20 +1380,44 @@ function JobsView({ token, selectedJobId, onSelectJob,
       ) : (
         <ul className="saved-jobs-list" aria-label="Saved jobs">
           {jobs.map((job) => (
-            <li key={job.id}>
-              <h2>{job.title}</h2>
-              <p>{job.company_name}</p>
-              <button
-                type="button"
-                className="text-button job-view-button"
-                aria-label={`View job: ${job.title} at ${job.company_name}`}
-                onClick={() => {
-                  setCreatedJobId(null);
+            <li key={job.id} className="saved-job-row">
+              <div className="saved-job-summary">
+                <h2>{job.title}</h2>
+                <p>{job.company_name}</p>
+                <button
+                  type="button"
+                  className="text-button job-view-button"
+                  aria-label={`View job: ${job.title} at ${job.company_name}`}
+                  onClick={() => {
+                    setCreatedJobId(null);
+                    setComparisonFromList(false);
+                    onSelectJob(job.id);
+                  }}
+                >
+                  View job
+                </button>
+              </div>
+              <SavedComparisonHistory
+                token={token}
+                job={job}
+                comparisonId={null}
+                historyCache={historyCache}
+                rowAction
+                onSelect={(id) => {
+                  setComparisonFromList(true);
                   onSelectJob(job.id);
+                  onSelectComparison(id);
                 }}
-              >
-                View job
-              </button>
+                actions={{
+                  run: comparisonRuns[job.id],
+                  onCompare: comparisonActions.onCompare,
+                  onShowResult: (jobId) => {
+                    setComparisonFromList(true);
+                    onSelectJob(jobId);
+                    comparisonActions.onShowResult(jobId);
+                  },
+                }}
+              />
             </li>
           ))}
         </ul>
@@ -1295,11 +1450,25 @@ function App() {
   const [requirementSelection, setRequirementSelection] =
     useState<RequirementSelection | null>(null);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
-  const [isComparing, setIsComparing] = useState(false);
+  const [comparisonRuns, setComparisonRuns] =
+    useState<Record<number, ComparisonRun>>({});
+  const [currentComparisonJobId, setCurrentComparisonJobId] =
+    useState<number | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [savedComparisonId, setSavedComparisonId] = useState<number | null>(null);
   const isPersistingRef = useRef(false);
-  const isComparingRef = useRef(false);
+  const comparisonRequests = useRef(new Set<number>());
+  const isComparing = savedJob
+    ? Boolean(comparisonRuns[savedJob.id]?.pending) : false;
+  const viewingJobComparison = view === "jobs" && (
+    savedComparisonId !== null || currentComparisonJobId !== null
+  );
+
+  function clearComparisonRequests() {
+    comparisonRequests.current = new Set();
+    setComparisonRuns({});
+    setCurrentComparisonJobId(null);
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1318,6 +1487,7 @@ function App() {
     try {
       const nextToken = await signIn(email, password);
       const nextUser = await getCurrentUser(nextToken);
+      clearComparisonRequests();
       setToken(nextToken);
       setUser(nextUser);
       setSelectedJobId(null);
@@ -1382,23 +1552,50 @@ function App() {
       void saveAuthenticatedDraft(token);
     }
   }
-  async function runComparison() {
-    if (!token || !savedJob || isComparingRef.current) return;
-    isComparingRef.current = true;
-    setIsComparing(true);
-    setComparisonError(null);
+  async function requestComparison(
+    jobId: number,
+  ): Promise<ComparisonOutcome | null> {
+    const requests = comparisonRequests.current;
+    if (!token || requests.has(jobId)) return null;
+    requests.add(jobId);
+    setComparisonRuns((current) => ({
+      ...current,
+      [jobId]: {
+        pending: true, error: null,
+        result: current[jobId]?.result ?? null,
+        version: current[jobId]?.version ?? 0,
+      },
+    }));
     try {
-      setComparison(await compareJob(token, savedJob.id));
+      const result = await compareJob(token, jobId);
+      if (comparisonRequests.current !== requests) return null;
+      setComparisonRuns((current) => ({
+        ...current,
+        [jobId]: {
+          pending: false, error: null, result,
+          version: (current[jobId]?.version ?? 0) + 1,
+        },
+      }));
+      return { result };
     } catch (caught) {
-      setComparisonError(
-        caught instanceof ApiError
-          ? caught.message
-          : "Unable to compare this job right now. Please try again later.",
-      );
+      if (comparisonRequests.current !== requests) return null;
+      const error = caught instanceof ApiError
+        ? caught.message
+        : "Unable to compare this job right now. Please try again later.";
+      setComparisonRuns((current) => ({
+        ...current, [jobId]: { ...current[jobId], pending: false, error },
+      }));
+      return { error };
     } finally {
-      isComparingRef.current = false;
-      setIsComparing(false);
+      requests.delete(jobId);
     }
+  }
+  async function runComparison() {
+    if (!savedJob || comparisonRequests.current.has(savedJob.id)) return;
+    setComparisonError(null);
+    const outcome = await requestComparison(savedJob.id);
+    if (outcome && "result" in outcome) setComparison(outcome.result);
+    else if (outcome) setComparisonError(outcome.error);
   }
   async function handleSignup(
     email: string,
@@ -1468,6 +1665,7 @@ function App() {
     setView("signup");
   }
   function logout() {
+    clearComparisonRequests();
     setSavedComparisonId(null);
     setSelectedJobId(null);
     setToken(null);
@@ -1553,12 +1751,13 @@ function App() {
                 type="button"
                 className="nav-button"
                 aria-current={(view === "jobs" || view === "add-job")
-                  && savedComparisonId === null
+                  && !viewingJobComparison
                   ? "page" : undefined}
                 onClick={() => {
                   if (token && user) {
                     setSelectedJobId(null);
                     setSavedComparisonId(null);
+                    setCurrentComparisonJobId(null);
                     setView("jobs");
                   }
                   else openLogin();
@@ -1573,9 +1772,9 @@ function App() {
               My CV
             </li>
             <li
-              className={view === "jobs" && savedComparisonId !== null
+              className={viewingJobComparison
                 ? "nav-item nav-item--current" : "nav-item"}
-              aria-current={view === "jobs" && savedComparisonId !== null
+              aria-current={viewingJobComparison
                 ? "page" : undefined}
             >
               <Icon name="arrows" />
@@ -1617,7 +1816,21 @@ function App() {
           selectedJobId={selectedJobId}
           onSelectJob={setSelectedJobId}
           comparisonId={savedComparisonId}
-          onSelectComparison={setSavedComparisonId}
+          comparisonRuns={comparisonRuns}
+          onSelectComparison={(id) => {
+            setSavedComparisonId(id);
+            setCurrentComparisonJobId(null);
+          }}
+          comparisonActions={{
+            run: selectedJobId !== null
+              ? comparisonRuns[selectedJobId] : undefined,
+            currentResult: selectedJobId !== null
+              && currentComparisonJobId === selectedJobId
+              ? comparisonRuns[selectedJobId]?.result ?? undefined
+              : undefined,
+            onCompare: requestComparison,
+            onShowResult: setCurrentComparisonJobId,
+          }}
           addingJob={view === "add-job"}
           onAddJob={() => setView("add-job")}
           onShowJobs={() => setView("jobs")}

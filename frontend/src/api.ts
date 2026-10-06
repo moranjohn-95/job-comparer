@@ -251,6 +251,9 @@ export async function getSavedComparisons(
     method: 'GET', headers: authorization(token), signal,
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (response.status === 206) {
+    throw new ApiError('The saved comparison history was incomplete. Please retry.')
+  }
   const body: unknown = await response.json()
   if (!Array.isArray(body)) {
     throw new ApiError('The saved comparisons response was invalid.')

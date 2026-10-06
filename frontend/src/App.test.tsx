@@ -817,8 +817,11 @@ test("loads Jobs in API order and retries errors including expired auth", async 
   expect(screen.getByRole("heading", { name: "Researcher", level: 1 }))
     .toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
-  expect(screen.getByRole("list", { name: "Saved jobs" }).textContent)
-    .toBe(list.textContent);
+  const returnedList = screen.getByRole("list", { name: "Saved jobs" });
+  expect([...returnedList.querySelectorAll(".saved-job-summary")]
+    .map((node) => node.textContent))
+    .toEqual([...list.querySelectorAll(".saved-job-summary")]
+      .map((node) => node.textContent));
   expect(attempts).toBe(2);
   expect(screen.getByRole("button", { name: "Jobs" }))
     .toHaveAttribute("aria-current", "page");
