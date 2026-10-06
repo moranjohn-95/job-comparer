@@ -89,7 +89,7 @@ def test_provider_match_with_wrong_credential_type_is_withheld(
         }],
         "assessments": [{
             "requirement_id": "req_0001", "status": "matched",
-            "cv_evidence_id": "cv_0001",
+            "cv_evidence_id": "cv_0001", "reason": "",
         }],
     }
     monkeypatch.setattr(
@@ -112,6 +112,11 @@ def test_provider_match_with_wrong_credential_type_is_withheld(
     assert result.matched_requirements == []
     assert result.possible_gaps == []
     assert "comparison is incomplete" in result.interpretation
-    assert requirement in result.interpretation
-    assert "Other CV evidence" in result.interpretation
+    assert len(result.needs_review) == 1
+    review = result.needs_review[0]
+    assert review.requirement == requirement
+    assert review.cv_evidence == cv
+    assert review.job_evidence == job
+    assert "Other CV evidence has not been ruled out" in review.reason
+    assert requirement not in result.interpretation
     assert "not a complete assessment" in result.interpretation

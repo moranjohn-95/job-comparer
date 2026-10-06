@@ -25,7 +25,7 @@ RESULT = {
     }],
     "assessments": [{
         "requirement_id": "req_0001", "status": "matched",
-        "cv_evidence_id": "cv_0001",
+        "cv_evidence_id": "cv_0001", "reason": "",
     }],
 }
 

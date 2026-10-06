@@ -83,9 +83,11 @@ def test_sentence_boundaries_keep_evidence_specific_and_context_visible(
         "assessments": [{
             "requirement_id": "req_0001", "status": "matched",
             "cv_evidence_id": cv_items[1]["id"],
+            "reason": "",
         }, {
             "requirement_id": "req_0002",
             "status": "not_found_in_cv", "cv_evidence_id": "",
+            "reason": "",
         }],
     }
     calls = mock_provider(monkeypatch, output)
@@ -101,6 +103,7 @@ def test_sentence_boundaries_keep_evidence_specific_and_context_visible(
     assert result.possible_gaps[0].job_evidence == job_items[1]["text"]
     assert set(result.model_dump()) == {
         "matched_requirements", "possible_gaps", "interpretation",
+        "needs_review",
     }
     assert "evidence_id" not in result.model_dump_json()
     catalog = json.loads(calls[0]["input"][1]["content"])
@@ -183,6 +186,7 @@ def test_inventory_is_unique_and_fully_assessed(
             {
                 "requirement_id": identifier,
                 "status": "not_found_in_cv", "cv_evidence_id": "",
+                "reason": "",
             }
             for identifier in assessments
         ],
@@ -209,7 +213,8 @@ def test_unassessed_requirement_is_not_manufactured_as_gap(
         }],
         "assessments": [{
             "requirement_id": "req_0001", "status": "unassessed",
-            "cv_evidence_id": "",
+            "cv_evidence_id": "cv_0001",
+            "reason": "The required deployment scope is unclear.",
         }],
     }
     mock_provider(monkeypatch, output)
@@ -222,7 +227,13 @@ def test_unassessed_requirement_is_not_manufactured_as_gap(
     assert result.matched_requirements == []
     assert result.possible_gaps == []
     assert "comparison is incomplete" in result.interpretation
-    assert "Linux deployment" in result.interpretation
+    assert [item.model_dump() for item in result.needs_review] == [{
+        "requirement": "Linux deployment",
+        "reason": "The required deployment scope is unclear.",
+        "job_evidence": "Linux deployment required.",
+        "cv_evidence": "Deployed on Ubuntu.",
+    }]
+    assert "Linux deployment" not in result.interpretation
     assert "may omit criteria" in result.interpretation
 
 
@@ -243,6 +254,7 @@ def test_public_list_limit_marks_unshown_requirements_incomplete(
             {
                 "requirement_id": f"req_{index:04d}",
                 "status": "not_found_in_cv", "cv_evidence_id": "",
+                "reason": "",
             }
             for index in range(1, 12)
         ],
@@ -256,7 +268,8 @@ def test_public_list_limit_marks_unshown_requirements_incomplete(
 
     assert len(result.possible_gaps) == 10
     assert "comparison is incomplete" in result.interpretation
-    assert "Criterion 11" in result.interpretation
+    assert "1 additional assessed requirement" in result.interpretation
+    assert "Criterion 11" not in result.interpretation
 
 
 @pytest.mark.parametrize("start,end", [(1190, 2077), (1430, 2045)])
@@ -278,6 +291,7 @@ def test_observed_legacy_offsets_are_not_accepted_as_new_evidence(
         "assessments": [{
             "requirement_id": "req_0001", "status": "matched",
             "cv_evidence_id": "cv_0001",
+            "reason": "",
             "cv_start": start,
             "cv_end": end,
             "job_start": 0,
@@ -308,10 +322,12 @@ def test_same_requirement_cannot_be_match_and_gap(
         "assessments": [{
             "requirement_id": "req_0001", "status": "matched",
             "cv_evidence_id": "cv_0001",
+            "reason": "",
         }, {
             "requirement_id": "req_0001",
             "status": "not_found_in_cv",
             "cv_evidence_id": "",
+            "reason": "",
         }],
     }
     mock_provider(monkeypatch, output)

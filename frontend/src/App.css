@@ -179,6 +179,99 @@ h1 {
   outline: 3px solid var(--color-focus);
   outline-offset: 3px;
 }
+.comparison-results {
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+  margin-top: var(--space-6);
+  overflow-wrap: anywhere;
+}
+.comparison-results > h2 {
+  margin: 0;
+  font-size: 1.5rem;
+  letter-spacing: -0.03em;
+}
+.comparison-section {
+  min-width: 0;
+  padding: clamp(var(--space-4), 3vw, var(--space-5));
+  border: 1px solid var(--color-border);
+  border-top-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+.comparison-section--matched {
+  border-top-color: var(--color-success);
+}
+.comparison-section--gaps {
+  border-top-color: var(--color-text-muted);
+}
+.comparison-section--review {
+  border-top-color: var(--color-accent);
+}
+.comparison-section h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.4;
+}
+.comparison-list {
+  display: grid;
+  gap: var(--space-4);
+  margin: var(--space-4) 0 0;
+  padding: 0;
+  list-style: none;
+}
+.comparison-item {
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+.comparison-item h4 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+.comparison-item__reason,
+.comparison-empty {
+  margin: var(--space-3) 0 0;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+.comparison-evidence {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-4) 0 0;
+}
+.comparison-evidence > div {
+  min-width: 0;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-page);
+}
+.comparison-evidence dt {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: 700;
+}
+.comparison-evidence dd {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.65;
+  white-space: normal;
+}
+.comparison-notice {
+  margin: 0;
+  padding: var(--space-4);
+  border-left: 3px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-deep);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
 .home-page {
   min-height: 100vh;
 }

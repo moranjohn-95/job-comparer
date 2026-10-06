@@ -69,11 +69,12 @@ PROVIDER_REFERENCES = {
     "assessments": [
         {
             "requirement_id": "req_0001", "status": "matched",
-            "cv_evidence_id": "cv_0001",
+            "cv_evidence_id": "cv_0001", "reason": "",
         },
         {
             "requirement_id": "req_0002",
             "status": "not_found_in_cv", "cv_evidence_id": "",
+            "reason": "",
         },
     ],
 }
@@ -873,6 +874,14 @@ def test_successful_result_persists_as_private_history(
     comparison = client.post(f"/jobs/{job_id}/compare", headers=headers)
 
     assert comparison.status_code == 200
+    legacy_result = comparison.json()
+    legacy_result.pop("needs_review")
+    legacy_result["interpretation"] = "Original historical interpretation."
+    with Session(get_engine()) as session:
+        entry = session.query(ComparisonHistory).filter_by(job_id=job_id).one()
+        assert entry.result == comparison.json()
+        entry.result = legacy_result
+        session.commit()
     with TestClient(app) as fresh_client:
         history = fresh_client.get(
             f"/jobs/{job_id}/comparisons", headers=headers
@@ -882,7 +891,7 @@ def test_successful_result_persists_as_private_history(
     saved = history.json()[0]
     assert saved["job_id"] == job_id
     assert saved["cv_outdated"] is False
-    assert saved["result"] == comparison.json()
+    assert saved["result"] == {**legacy_result, "needs_review": []}
     assert datetime.fromisoformat(saved["created_at"]).tzinfo is not None
     assert len(calls) == 1
     assert client.get(
@@ -897,7 +906,7 @@ def test_successful_result_persists_as_private_history(
         ).revision
         assert "cv_text" not in entry.result
         assert "job_description" not in entry.result
-        assert entry.result == comparison.json()
+        assert entry.result == legacy_result
 
 
 def test_qualification_mismatch_returns_and_saves_incomplete_result(
@@ -930,6 +939,7 @@ def test_qualification_mismatch_returns_and_saves_incomplete_result(
                 "requirement_id": f"req_{index:04d}",
                 "status": "matched",
                 "cv_evidence_id": f"cv_{index:04d}",
+                "reason": "",
             }
             for index in (1, 2)
         ],
@@ -950,8 +960,17 @@ def test_qualification_mismatch_returns_and_saves_incomplete_result(
     ] == ["Python experience"]
     assert result["possible_gaps"] == []
     assert "comparison is incomplete" in result["interpretation"]
-    assert "Engineering degree" in result["interpretation"]
-    assert "Other CV evidence" in result["interpretation"]
+    assert result["needs_review"] == [{
+        "requirement": "Engineering degree",
+        "reason": (
+            "Selected CV evidence does not establish the required "
+            "qualification type or level. Other CV evidence has not "
+            "been ruled out."
+        ),
+        "job_evidence": "Engineering degree required.",
+        "cv_evidence": "Diploma in engineering.",
+    }]
+    assert "Engineering degree" not in result["interpretation"]
     history = client.get(
         f"/jobs/{job_id}/comparisons", headers=headers,
     )

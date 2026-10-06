@@ -617,6 +617,12 @@ async function saveTextDraftAndLogIn() {
 }
 
 test("shows evidence-based comparison results only after Compare is clicked", async () => {
+  const needsReview = {
+    requirement: "Emergency response certification",
+    reason: "The listed training does not establish the required certification.",
+    job_evidence: "Emergency response certification required.",
+    cv_evidence: "Completed workplace safety training.",
+  };
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/jobs/7/compare")) {
@@ -624,7 +630,13 @@ test("shows evidence-based comparison results only after Compare is clicked", as
         method: "POST",
         headers: { Authorization: "Bearer token" },
       });
-      return Promise.resolve({ ok: true, json: async () => comparisonResult });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          ...comparisonResult,
+          needs_review: [needsReview],
+        }),
+      });
     }
     return Promise.resolve(savedDraftResponse(url));
   });
@@ -634,8 +646,16 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   expect(screen.queryByText("Comparison results")).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Compare" }));
   expect(await screen.findByText("Comparison results")).toBeVisible();
-  expect(screen.getByText("CV evidence: Built TypeScript web applications.")).toBeVisible();
-  expect(screen.getByText("Job evidence: Operate services on Kubernetes.")).toBeVisible();
+  expect(screen.getByText("Built TypeScript web applications."))
+    .toBeVisible();
+  expect(screen.getByText("Operate services on Kubernetes.")).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Needs review" })).toBeVisible();
+  expect(screen.getByText(needsReview.requirement)).toBeVisible();
+  expect(screen.getByText(needsReview.reason)).toBeVisible();
+  expect(screen.getByText(needsReview.cv_evidence))
+    .toBeVisible();
+  expect(screen.getByText(needsReview.job_evidence))
+    .toBeVisible();
   expect(screen.getByText(comparisonResult.interpretation)).toBeVisible();
 });
 
@@ -658,8 +678,21 @@ test("disables Compare while a comparison request is running", async () => {
   expect(await screen.findByText("Comparing your CV and job…")).toBeVisible();
   expect(button).toBeDisabled();
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("compare"))).toHaveLength(1);
-  resolveComparison?.({ ok: true, json: async () => comparisonResult } as Response);
+  resolveComparison?.({
+    ok: true,
+    json: async () => ({
+      ...comparisonResult,
+      matched_requirements: [],
+      possible_gaps: [],
+    }),
+  } as Response);
   expect(await screen.findByText("Comparison results")).toBeVisible();
+  expect(screen.getByText("No matched requirements were returned."))
+    .toBeVisible();
+  expect(screen.getByText("No possible gaps were returned.")).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "Needs review" }))
+    .not.toBeInTheDocument();
+  expect(screen.getByText(comparisonResult.interpretation)).toBeVisible();
 });
 
 test("shows comparison API errors without retrying or saving another draft", async () => {

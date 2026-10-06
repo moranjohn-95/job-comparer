@@ -512,6 +512,26 @@ function HomeView({
   );
 }
 
+function ComparisonEvidence({ cv, job }: {
+  cv?: string | null;
+  job: string;
+}) {
+  return (
+    <dl className="comparison-evidence">
+      {cv && (
+        <div>
+          <dt>CV evidence</dt>
+          <dd>{cv}</dd>
+        </div>
+      )}
+      <div>
+        <dt>Job evidence</dt>
+        <dd>{job}</dd>
+      </div>
+    </dl>
+  );
+}
+
 function App() {
   const [status, setStatus] = useState<ConnectionStatus>("checking");
   const [checkNumber, setCheckNumber] = useState(0);
@@ -853,28 +873,88 @@ function App() {
               <p role="alert">Comparison unavailable: {comparisonError}</p>
             )}
             {comparison && (
-              <section aria-labelledby="comparison-heading">
+              <section
+                className="comparison-results"
+                aria-labelledby="comparison-heading"
+              >
                 <h2 id="comparison-heading">Comparison results</h2>
-                <h3>Matched requirements</h3>
-                <ul>
-                  {comparison.matched_requirements.map((match) => (
-                    <li key={`${match.requirement}-${match.cv_evidence}`}>
-                      <strong>{match.requirement}</strong>
-                      <p>CV evidence: {match.cv_evidence}</p>
-                      <p>Job evidence: {match.job_evidence}</p>
-                    </li>
-                  ))}
-                </ul>
-                <h3>Possible gaps</h3>
-                <ul>
-                  {comparison.possible_gaps.map((gap) => (
-                    <li key={`${gap.requirement}-${gap.job_evidence}`}>
-                      <strong>{gap.requirement}</strong>
-                      <p>Job evidence: {gap.job_evidence}</p>
-                    </li>
-                  ))}
-                </ul>
-                <p>{comparison.interpretation}</p>
+                <section
+                  className="comparison-section comparison-section--matched"
+                  aria-labelledby="comparison-matches-heading"
+                >
+                  <h3 id="comparison-matches-heading">Matched requirements</h3>
+                  {comparison.matched_requirements.length > 0 ? (
+                    <ul className="comparison-list">
+                      {comparison.matched_requirements.map((match) => (
+                        <li
+                          className="comparison-item"
+                          key={`${match.requirement}-${match.cv_evidence}`}
+                        >
+                          <h4>{match.requirement}</h4>
+                          <ComparisonEvidence
+                            cv={match.cv_evidence}
+                            job={match.job_evidence}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="comparison-empty">
+                      No matched requirements were returned.
+                    </p>
+                  )}
+                </section>
+                <section
+                  className="comparison-section comparison-section--gaps"
+                  aria-labelledby="comparison-gaps-heading"
+                >
+                  <h3 id="comparison-gaps-heading">Possible gaps</h3>
+                  {comparison.possible_gaps.length > 0 ? (
+                    <ul className="comparison-list">
+                      {comparison.possible_gaps.map((gap) => (
+                        <li
+                          className="comparison-item"
+                          key={`${gap.requirement}-${gap.job_evidence}`}
+                        >
+                          <h4>{gap.requirement}</h4>
+                          <ComparisonEvidence job={gap.job_evidence} />
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="comparison-empty">
+                      No possible gaps were returned.
+                    </p>
+                  )}
+                </section>
+                {comparison.needs_review.length > 0 && (
+                  <section
+                    className="comparison-section comparison-section--review"
+                    aria-labelledby="comparison-review-heading"
+                  >
+                    <h3 id="comparison-review-heading">Needs review</h3>
+                    <ul className="comparison-list">
+                      {comparison.needs_review.map((item) => (
+                        <li
+                          className="comparison-item"
+                          key={`${item.requirement}-${item.job_evidence}`}
+                        >
+                          <h4>{item.requirement}</h4>
+                          <p className="comparison-item__reason">
+                            {item.reason}
+                          </p>
+                          <ComparisonEvidence
+                            cv={item.cv_evidence}
+                            job={item.job_evidence}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
+                <p className="comparison-notice">
+                  {comparison.interpretation}
+                </p>
               </section>
             )}
           </section>

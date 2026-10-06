@@ -129,6 +129,7 @@ def test_semantic_contract_and_relevant_excerpts(
             {
                 "requirement_id": f"req_{index:04d}",
                 "status": "matched",
+                "reason": "",
                 **reference(cv, "cv", cv_quote),
             }
             for index, (_, cv_quote, _) in enumerate(matches, start=1)
@@ -136,6 +137,7 @@ def test_semantic_contract_and_relevant_excerpts(
             {
                 "requirement_id": f"req_{index:04d}",
                 "status": "not_found_in_cv", "cv_evidence_id": "",
+                "reason": "",
             }
             for index in range(len(matches) + 1, len(criteria) + 1)
         ],

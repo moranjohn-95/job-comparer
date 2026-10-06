@@ -127,7 +127,7 @@ from comparison import (
             ["Required C++ development"],
             [
                 "Check the excerpt in context for negation, aspirations",
-                "recheck every match against its selected excerpt",
+                "recheck every match against the complete supporting CV",
             ],
             id="negation-and-aspiration-are-not-experience",
         ),
@@ -191,6 +191,7 @@ def test_accuracy_instructions_and_synthetic_response_contract(
             }
             for label in gaps
         ],
+        "needs_review": [],
     }
     labels = [label for label, _ in matches] + gaps
     references = {
@@ -206,12 +207,14 @@ def test_accuracy_instructions_and_synthetic_response_contract(
             {
                 "requirement_id": f"req_{index:04d}",
                 "status": "matched", "cv_evidence_id": item["id"],
+                "reason": "",
             }
             for index, item in enumerate(selected, start=1)
         ] + [
             {
                 "requirement_id": f"req_{index:04d}",
                 "status": "not_found_in_cv", "cv_evidence_id": "",
+                "reason": "",
             }
             for index in range(len(matches) + 1, len(labels) + 1)
         ],

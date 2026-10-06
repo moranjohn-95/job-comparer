@@ -15,6 +15,12 @@ export type ComparisonResult = {
     job_evidence: string
     status: 'not_found_in_cv'
   }>
+  needs_review: Array<{
+    requirement: string
+    reason: string
+    job_evidence: string
+    cv_evidence?: string | null
+  }>
   interpretation: string
 }
 
@@ -122,7 +128,27 @@ export async function compareJob(
   ) {
     throw new ApiError('The comparison returned an invalid result.')
   }
-  return body as ComparisonResult
+  const needsReview = result.needs_review === undefined
+    ? []
+    : result.needs_review
+  if (
+    !Array.isArray(needsReview) ||
+    !needsReview.every((value: unknown) => {
+      if (typeof value !== 'object' || value === null) return false
+      const item = value as Record<string, unknown>
+      return (
+        typeof item.requirement === 'string' &&
+        typeof item.reason === 'string' &&
+        typeof item.job_evidence === 'string' &&
+        (item.cv_evidence === undefined ||
+          item.cv_evidence === null ||
+          typeof item.cv_evidence === 'string')
+      )
+    })
+  ) {
+    throw new ApiError('The comparison returned an invalid result.')
+  }
+  return { ...body as ComparisonResult, needs_review: needsReview }
 }
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {
