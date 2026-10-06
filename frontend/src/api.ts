@@ -108,6 +108,36 @@ export async function createJob(
   }
 }
 
+export async function getJobs(
+  token: string,
+  signal: AbortSignal,
+): Promise<SavedJob[]> {
+  const response = await fetch(`${API_URL}/jobs`, {
+    method: 'GET',
+    headers: authorization(token),
+    signal,
+  })
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  if (!Array.isArray(body)) {
+    throw new ApiError('The jobs response was invalid. Please try again.')
+  }
+  return body.map((value: unknown) => {
+    if (typeof value !== 'object' || value === null) {
+      throw new ApiError('The jobs response was invalid. Please try again.')
+    }
+    const job = value as Record<string, unknown>
+    if (
+      typeof job.id !== 'number' ||
+      typeof job.title !== 'string' ||
+      typeof job.company_name !== 'string'
+    ) {
+      throw new ApiError('The jobs response was invalid. Please try again.')
+    }
+    return { id: job.id, title: job.title, company_name: job.company_name }
+  })
+}
+
 export async function compareJob(
   token: string,
   jobId: number,

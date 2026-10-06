@@ -626,6 +626,9 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   };
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.endsWith("/jobs") && init?.method === "GET") {
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
     if (url.endsWith("/jobs/7/compare")) {
       comparisonCount += 1;
       expect(init).toMatchObject({
@@ -676,6 +679,13 @@ test("shows evidence-based comparison results only after Compare is clicked", as
   expect(fetchMock.mock.calls).toHaveLength(requestsBeforeSelection);
   expect(screen.getAllByRole("region", { name: "Requirement details" }))
     .toHaveLength(1);
+
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(await screen.findByText("You have no saved jobs yet."))
+    .toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  expect(screen.getByText(needsReview.reason)).toBeVisible();
+  expect(comparisonCount).toBe(1);
 
   fireEvent.click(screen.getByRole("button", { name: "Compare again" }));
   expect(await screen.findByRole("button", {
@@ -743,4 +753,94 @@ test("shows comparison API errors without retrying or saving another draft", asy
   );
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/jobs"))).toHaveLength(1);
+});
+
+test("loads Jobs in API order and retries errors including expired auth", async () => {
+  const jobs = [
+    { id: 9, title: "Researcher", company_name: "North Lab" },
+    { id: 2, title: "Technician", company_name: "South Lab" },
+  ];
+  let attempts = 0;
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/jobs") && init?.method === "GET") {
+      expect(init.headers).toEqual({ Authorization: "Bearer token" });
+      attempts += 1;
+      return Promise.resolve(attempts === 1
+        ? { ok: false, json: async () => ({ detail: "Invalid or expired token" }) }
+        : { ok: true, json: async () => attempts === 2 ? jobs : [] });
+    }
+    return Promise.resolve(savedDraftResponse(String(input)));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Dashboard" });
+  const beforeJobs = fetchMock.mock.calls.length;
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(screen.getByText("Loading saved jobs…")).toBeVisible();
+  expect(await screen.findByRole("alert"))
+    .toHaveTextContent("Invalid or expired token");
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  const list = await screen.findByRole("list", { name: "Saved jobs" });
+  expect([...list.querySelectorAll("h2")].map((node) => node.textContent))
+    .toEqual(jobs.map((job) => job.title));
+  expect(screen.getByText("North Lab")).toBeVisible();
+  expect(list.querySelector("button, a")).toBeNull();
+  expect(screen.getByRole("button", { name: "Jobs" }))
+    .toHaveAttribute("aria-current", "page");
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(await screen.findByText("You have no saved jobs yet."))
+    .toBeVisible();
+  expect(fetchMock.mock.calls.slice(beforeJobs).every(
+    ([, init]) => init?.method === "GET",
+  )).toBe(true);
+});
+
+test("discards a pending Jobs response after logout and another login", async () => {
+  let resolveJobs!: (response: unknown) => void;
+  let jobsSignal: AbortSignal | undefined;
+  let account = 0;
+  const pending = new Promise((resolve) => { resolveJobs = resolve; });
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input).endsWith("/login")) {
+      account += 1;
+      return Promise.resolve({
+        ok: true, json: async () => ({ access_token: `token-${account}` }),
+      });
+    }
+    if (String(input).endsWith("/me")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ id: account, email: `user${account}@example.com` }),
+      });
+    }
+    if (String(input).endsWith("/jobs") && init?.method === "GET") {
+      if (!jobsSignal) {
+        jobsSignal = init.signal as AbortSignal;
+        return pending;
+      }
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
+    return Promise.resolve(savedDraftResponse(String(input)));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Dashboard" });
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(screen.getByRole("button", { name: "Log out" }));
+  expect(jobsSignal?.aborted).toBe(true);
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Dashboard" });
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  resolveJobs({ ok: true, json: async () => [
+    { id: 1, title: "Previous account job", company_name: "Previous company" },
+  ] });
+  expect(await screen.findByText("You have no saved jobs yet."))
+    .toBeVisible();
+  expect(screen.queryByText("Previous account job")).not.toBeInTheDocument();
 });
