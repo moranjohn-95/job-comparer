@@ -1004,23 +1004,33 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
     <section className="saved-comparisons" aria-labelledby="history-heading">
       <h2 id="history-heading">Saved comparisons</h2>
       {progress ?? (entries.length === 0 ? (
-        <p>No saved comparisons for this job yet.</p>
+        <p>No saved comparisons yet.</p>
       ) : (
         <ul className="saved-jobs-list">
           {entries.map((entry) => (
             <li key={entry.id}>
-              <time dateTime={entry.created_at}>
-                {new Date(entry.created_at).toLocaleString()}
+              <time className="job-history-date" dateTime={entry.created_at}>
+                <span>
+                  {new Date(entry.created_at).toLocaleDateString(undefined, {
+                    day: "numeric", month: "short", year: "numeric",
+                  })}
+                </span>
+                <span>
+                  {new Date(entry.created_at).toLocaleTimeString(undefined, {
+                    hour: "2-digit", minute: "2-digit",
+                  })}
+                </span>
               </time>
               <button
                 type="button"
-                className="text-button"
+                className="cv-save job-primary"
                 aria-label={
                   `View comparison: ${new Date(entry.created_at).toLocaleString()}`
                 }
                 onClick={() => onSelect(entry.id)}
               >
-                View comparison
+                <span>View</span>
+                <Icon name="arrow-right" />
               </button>
             </li>
           ))}
@@ -1254,11 +1264,14 @@ function JobDetailsView({ token, jobId, onBack,
     );
   }
   return (
-    <main className="main-content jobs-page">
-      <button type="button" className="text-button job-back" onClick={onBack}>
-        Back to jobs
-      </button>
-      <h1>{job?.title ?? "Job details"}</h1>
+    <main className="main-content jobs-page job-details-page">
+      <header className="job-detail-header">
+        <button type="button" className="text-button job-back" onClick={onBack}>
+          Back to jobs
+        </button>
+        <h1>{job?.title ?? "Job details"}</h1>
+        {job && <p className="jobs-intro">{job.company_name}</p>}
+      </header>
       {successMessage && (
         <p className="job-saved-notice" role="status">{successMessage}</p>
       )}
@@ -1283,15 +1296,7 @@ function JobDetailsView({ token, jobId, onBack,
           </button>
         </div>
       ) : (
-        <>
-          <p className="jobs-intro">{job.company_name}</p>
-          <section
-            className="saved-job-description"
-            aria-label="Job description"
-          >
-            <h2>Job description</h2>
-            <p>{job.description}</p>
-          </section>
+        <div className="job-detail-layout">
           <SavedComparisonHistory
             token={token}
             job={job}
@@ -1300,7 +1305,19 @@ function JobDetailsView({ token, jobId, onBack,
             actions={comparisonActions}
             historyCache={historyCache}
           />
-        </>
+          <section
+            className="saved-job-description"
+            aria-label="Job description"
+          >
+            <h2>Job description</h2>
+            <div className="job-description-text">
+              {job.description.split(/(\r?\n(?:[ \t]*\r?\n)+)/).map(
+                (part, index) => index % 2 === 0 && part.trim()
+                  ? <p key={index}>{part}</p> : part,
+              )}
+            </div>
+          </section>
+        </div>
       )}
     </main>
   );

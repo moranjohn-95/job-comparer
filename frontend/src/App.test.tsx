@@ -813,7 +813,8 @@ test("loads Jobs in API order and retries errors including expired auth", async 
     .toHaveTextContent("This job was not found");
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
   const details = await screen.findByRole("region", { name: "Job description" });
-  expect(details.querySelector("p")?.textContent).toBe(description);
+  expect(details.querySelector(".job-description-text")?.textContent)
+    .toBe(description);
   expect(screen.getByRole("heading", { name: "Researcher", level: 1 }))
     .toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
