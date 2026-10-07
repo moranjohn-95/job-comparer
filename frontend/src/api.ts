@@ -12,6 +12,16 @@ export type SavedComparison = {
   cv_outdated: boolean
   result: ComparisonResult
 }
+export type ComparisonSummary = {
+  id: number
+  job_id: number
+  job_title: string
+  company_name: string
+  created_at: string
+  matched_requirements_count: number
+  possible_gaps_count: number
+  needs_review_count: number
+}
 export type ComparisonResult = {
   matched_requirements: Array<{
     requirement: string
@@ -242,6 +252,36 @@ function parseSavedComparison(body: unknown, jobId: number): SavedComparison {
     id: entry.id, job_id: jobId, created_at: entry.created_at,
     cv_outdated: entry.cv_outdated, result: parseComparisonResult(entry.result),
   }
+}
+
+export async function getComparisonSummaries(
+  token: string, signal: AbortSignal,
+): Promise<ComparisonSummary[]> {
+  const response = await fetch(`${API_URL}/comparisons`, {
+    method: 'GET', headers: authorization(token), signal,
+  })
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  const invalid = 'The comparison history response was invalid. Please retry.'
+  if (response.status === 206 || !Array.isArray(body)) {
+    throw new ApiError(invalid)
+  }
+  return body.map((value: unknown) => {
+    if (typeof value !== 'object' || value === null) throw new ApiError(invalid)
+    const entry = value as Record<string, unknown>
+    if (
+      typeof entry.id !== 'number' || !Number.isInteger(entry.id) ||
+      typeof entry.job_id !== 'number' || !Number.isInteger(entry.job_id) ||
+      typeof entry.job_title !== 'string' ||
+      typeof entry.company_name !== 'string' ||
+      typeof entry.created_at !== 'string' ||
+      !Number.isFinite(Date.parse(entry.created_at)) ||
+      !['matched_requirements_count', 'possible_gaps_count', 'needs_review_count']
+        .every((field) => typeof entry[field] === 'number'
+          && Number.isInteger(entry[field]) && entry[field] >= 0)
+    ) throw new ApiError(invalid)
+    return entry as ComparisonSummary
+  })
 }
 
 export async function getSavedComparisons(

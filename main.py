@@ -19,7 +19,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -170,6 +170,17 @@ class ComparisonHistoryPublic(BaseModel):
     created_at: datetime
     cv_outdated: bool
     result: ComparisonResult
+
+
+class ComparisonSummaryPublic(BaseModel):
+    id: int
+    job_id: int
+    job_title: str
+    company_name: str
+    created_at: datetime
+    matched_requirements_count: int = Field(ge=0)
+    possible_gaps_count: int = Field(ge=0)
+    needs_review_count: int = Field(ge=0)
 
 
 def normalized_email(email: EmailStr) -> str:
@@ -526,6 +537,41 @@ def history_public(
         cv_outdated=current_revision != entry.cv_revision,
         result=ComparisonResult.model_validate(entry.result),
     )
+
+
+@app.get("/comparisons", response_model=list[ComparisonSummaryPublic])
+def list_comparison_summaries(
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> list[ComparisonSummaryPublic]:
+    counts = [
+        func.coalesce(
+            func.jsonb_array_length(ComparisonHistory.result[field]), 0
+        ).label(f"{field}_count")
+        for field in (
+            "matched_requirements", "possible_gaps", "needs_review"
+        )
+    ]
+    rows = session.execute(
+        select(
+            ComparisonHistory.id,
+            ComparisonHistory.job_id,
+            SavedJob.title.label("job_title"),
+            SavedJob.company_name,
+            ComparisonHistory.created_at,
+            *counts,
+        )
+        .join(SavedJob, SavedJob.id == ComparisonHistory.job_id)
+        .where(
+            ComparisonHistory.user_id == user.id,
+            SavedJob.user_id == user.id,
+        )
+        .order_by(
+            ComparisonHistory.created_at.desc(),
+            ComparisonHistory.id.desc(),
+        )
+    ).mappings()
+    return [ComparisonSummaryPublic.model_validate(row) for row in rows]
 
 
 @app.get(

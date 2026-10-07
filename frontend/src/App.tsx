@@ -1,4 +1,5 @@
 import {
+  Activity,
   useEffect,
   useRef,
   useState,
@@ -17,6 +18,7 @@ import {
   getJob,
   getSavedComparisons,
   getSavedComparison,
+  getComparisonSummaries,
   signIn,
   signUp,
   saveCvText,
@@ -26,11 +28,14 @@ import {
   type SavedJob,
   type JobDetails,
   type SavedComparison,
+  type ComparisonSummary,
 } from "./api";
 import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
-type View = "home" | "dashboard" | "jobs" | "add-job" | "login" | "signup";
+type View =
+  | "home" | "dashboard" | "jobs" | "add-job" | "comparisons"
+  | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
 type RequirementCategory =
@@ -824,13 +829,13 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   job: SavedJob;
   comparisonId: number | null;
   onSelect: (id: number | null) => void;
-  actions: JobComparisonActions;
+  actions?: JobComparisonActions;
   historyCache: JobHistoryCache;
   rowAction?: boolean;
   backLabel?: string;
 }) {
-  const historyVersion = actions.run?.version ?? 0;
-  const cached = comparisonId === null && !actions.currentResult
+  const historyVersion = actions?.run?.version ?? 0;
+  const cached = comparisonId === null && !actions?.currentResult
     && historyCache.get(job.id)?.version === historyVersion
     ? historyCache.get(job.id) : undefined;
   const [entries, setEntries] = useState<SavedComparison[]>(
@@ -841,12 +846,12 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   const [attempt, setAttempt] = useState(0);
   const [selection, setSelection] = useState<RequirementSelection | null>(null);
   const [loadedVersion, setLoadedVersion] = useState(historyVersion);
-  const currentResult = actions.currentResult;
+  const currentResult = actions?.currentResult;
   const historyLoading = loading || loadedVersion !== historyVersion;
-  const active = useRef(false);
+  const active = useRef(0);
   useEffect(() => {
-    active.current = true;
-    return () => { active.current = false; };
+    active.current += 1;
+    return () => { active.current += 1; };
   }, []);
   useEffect(() => {
     if (currentResult) return;
@@ -894,9 +899,10 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
     historyCache]);
 
   async function startComparison() {
-    const outcome = await actions.onCompare(job.id);
-    if (outcome && "result" in outcome && active.current) {
-      actions.onShowResult(job.id);
+    const origin = active.current;
+    const outcome = await actions?.onCompare(job.id);
+    if (outcome && "result" in outcome && active.current === origin) {
+      actions?.onShowResult(job.id);
     }
   }
   const progress = !currentResult && historyLoading ? (
@@ -980,16 +986,16 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
           type="button"
           className="cv-save job-primary"
           onClick={() => void startComparison()}
-          disabled={actions.run?.pending}
+          disabled={actions?.run?.pending}
         >
-          <span>{actions.run?.pending ? "Comparing…" : "Compare with my CV"}</span>
+          <span>{actions?.run?.pending ? "Comparing…" : "Compare with my CV"}</span>
           <Icon name="arrow-right" />
         </button>
       ))}
-      {actions.run?.pending && (
+      {actions?.run?.pending && (
         <p role="status">Comparing your CV and job…</p>
       )}
-      {actions.run?.error && (
+      {actions?.run?.error && (
         <p role="alert">Comparison unavailable: {actions.run.error}</p>
       )}
     </div>
@@ -1021,6 +1027,107 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
         </ul>
       ))}
     </section>
+  );
+}
+
+function ComparisonsView({ token }: { token: string }) {
+  const [entries, setEntries] = useState<ComparisonSummary[]>([]);
+  const [selected, setSelected] = useState<ComparisonSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [historyCache] = useState<JobHistoryCache>(() => new Map());
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void getComparisonSummaries(token, controller.signal).then(
+      (result) => {
+        if (!active) return;
+        setEntries(result);
+        setLoading(false);
+      },
+      (caught: unknown) => {
+        if (!active) return;
+        setError(caught instanceof ApiError
+          ? caught.message : "Unable to load comparison history. Please retry.");
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [token, attempt]);
+
+  if (selected) return (
+    <SavedComparisonHistory
+      key={selected.id}
+      token={token}
+      job={{
+        id: selected.job_id, title: selected.job_title,
+        company_name: selected.company_name,
+      }}
+      comparisonId={selected.id}
+      historyCache={historyCache}
+      backLabel="Back to comparisons"
+      onSelect={() => setSelected(null)}
+    />
+  );
+  return (
+    <main className="main-content jobs-page jobs-list-page">
+      <div className="jobs-heading"><h1>Comparisons</h1></div>
+      {loading ? (
+        <p role="status">Loading saved comparisons…</p>
+      ) : error ? (
+        <div className="jobs-message">
+          <p role="alert">Could not load saved comparisons: {error}</p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : entries.length === 0 ? (
+        <p className="jobs-message">You have no saved comparisons yet.</p>
+      ) : (
+        <ul className="saved-jobs-list" aria-label="Saved comparisons">
+          {entries.map((entry) => (
+            <li key={entry.id} className="saved-job-row">
+              <div className="saved-job-summary">
+                <h2>{entry.job_title}</h2>
+                <p>{entry.company_name}</p>
+                <p>
+                  <time dateTime={entry.created_at}>
+                    {new Date(entry.created_at).toLocaleString()}
+                  </time>
+                </p>
+                <p>
+                  Matched: {entry.matched_requirements_count}
+                  {" · "}Possible gaps: {entry.possible_gaps_count}
+                  {" · "}Needs review: {entry.needs_review_count}
+                </p>
+              </div>
+              <div className="job-comparison-action">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => setSelected(entry)}
+                >
+                  View
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </main>
   );
 }
 
@@ -1471,6 +1578,9 @@ function App() {
     useState<number | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<number | null>(null);
   const [savedComparisonId, setSavedComparisonId] = useState<number | null>(null);
+  const [jobsVisited, setJobsVisited] = useState(false);
+  const [jobsScreen, setJobsScreen] = useState<"jobs" | "add-job">("jobs");
+  const [comparisonVisit, setComparisonVisit] = useState(0);
   const isPersistingRef = useRef(false);
   const comparisonRequests = useRef(new Set<number>());
   const isComparing = savedJob
@@ -1483,6 +1593,8 @@ function App() {
     comparisonRequests.current = new Set();
     setComparisonRuns({});
     setCurrentComparisonJobId(null);
+    setJobsVisited(false);
+    setJobsScreen("jobs");
   }
 
   useEffect(() => {
@@ -1770,10 +1882,16 @@ function App() {
                   ? "page" : undefined}
                 onClick={() => {
                   if (token && user) {
-                    setSelectedJobId(null);
-                    setSavedComparisonId(null);
-                    setCurrentComparisonJobId(null);
-                    setView("jobs");
+                    if (view === "jobs" || view === "add-job") {
+                      setSelectedJobId(null);
+                      setSavedComparisonId(null);
+                      setCurrentComparisonJobId(null);
+                      setJobsScreen("jobs");
+                      setView("jobs");
+                    } else {
+                      setView(jobsScreen);
+                    }
+                    setJobsVisited(true);
                   }
                   else openLogin();
                 }}
@@ -1786,14 +1904,23 @@ function App() {
               <Icon name="document" />
               My CV
             </li>
-            <li
-              className={viewingJobComparison
-                ? "nav-item nav-item--current" : "nav-item"}
-              aria-current={viewingJobComparison
-                ? "page" : undefined}
-            >
-              <Icon name="arrows" />
-              Comparisons
+            <li>
+              <button
+                type="button"
+                className="nav-button"
+                aria-current={view === "comparisons" || viewingJobComparison
+                  ? "page" : undefined}
+                onClick={() => {
+                  if (token && user) {
+                    setComparisonVisit((value) => value + 1);
+                    setView("comparisons");
+                  }
+                  else openLogin();
+                }}
+              >
+                <Icon name="arrows" />
+                Comparisons
+              </button>
             </li>
           </ul>
           <p className="nav-label nav-label--lower">Account</p>
@@ -1824,33 +1951,49 @@ function App() {
           <span>{statusText[status]}</span>
         </div>
       </aside>
-      {(view === "jobs" || view === "add-job") && token && user ? (
-        <JobsView
-          key={`${user.id}:${token}`}
+      {jobsVisited && token && user && (
+        <Activity mode={view === "jobs" || view === "add-job"
+          ? "visible" : "hidden"}>
+          <JobsView
+            key={`${user.id}:${token}`}
+            token={token}
+            selectedJobId={selectedJobId}
+            onSelectJob={setSelectedJobId}
+            comparisonId={savedComparisonId}
+            comparisonRuns={comparisonRuns}
+            onSelectComparison={(id) => {
+              setSavedComparisonId(id);
+              setCurrentComparisonJobId(null);
+            }}
+            comparisonActions={{
+              run: selectedJobId !== null
+                ? comparisonRuns[selectedJobId] : undefined,
+              currentResult: selectedJobId !== null
+                && currentComparisonJobId === selectedJobId
+                ? comparisonRuns[selectedJobId]?.result ?? undefined
+                : undefined,
+              onCompare: requestComparison,
+              onShowResult: setCurrentComparisonJobId,
+            }}
+            addingJob={jobsScreen === "add-job"}
+            onAddJob={() => {
+              setJobsScreen("add-job");
+              setView("add-job");
+            }}
+            onShowJobs={() => {
+              setJobsScreen("jobs");
+              setView("jobs");
+            }}
+          />
+        </Activity>
+      )}
+      {view === "comparisons" && token && user && (
+        <ComparisonsView
+          key={`${user.id}:${token}:${comparisonVisit}`}
           token={token}
-          selectedJobId={selectedJobId}
-          onSelectJob={setSelectedJobId}
-          comparisonId={savedComparisonId}
-          comparisonRuns={comparisonRuns}
-          onSelectComparison={(id) => {
-            setSavedComparisonId(id);
-            setCurrentComparisonJobId(null);
-          }}
-          comparisonActions={{
-            run: selectedJobId !== null
-              ? comparisonRuns[selectedJobId] : undefined,
-            currentResult: selectedJobId !== null
-              && currentComparisonJobId === selectedJobId
-              ? comparisonRuns[selectedJobId]?.result ?? undefined
-              : undefined,
-            onCompare: requestComparison,
-            onShowResult: setCurrentComparisonJobId,
-          }}
-          addingJob={view === "add-job"}
-          onAddJob={() => setView("add-job")}
-          onShowJobs={() => setView("jobs")}
         />
-      ) : (
+      )}
+      {view !== "jobs" && view !== "add-job" && view !== "comparisons" && (
         <main
           className={comparison
             ? "main-content main-content--comparison"
