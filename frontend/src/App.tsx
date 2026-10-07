@@ -19,6 +19,7 @@ import {
   getSavedComparisons,
   getSavedComparison,
   getComparisonSummaries,
+  getSavedCv,
   signIn,
   signUp,
   saveCvText,
@@ -34,7 +35,7 @@ import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 type View =
-  | "home" | "dashboard" | "jobs" | "add-job" | "comparisons"
+  | "home" | "dashboard" | "jobs" | "add-job" | "comparisons" | "my-cv"
   | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
@@ -1040,6 +1041,96 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   );
 }
 
+function MyCvView({ token }: { token: string }) {
+  const [text, setText] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [preview, setPreview] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void getSavedCv(token, controller.signal).then(
+      (result) => {
+        if (!active) return;
+        setText(result);
+        setLoading(false);
+      },
+      (caught: unknown) => {
+        if (!active) return;
+        setError(caught instanceof ApiError
+          ? caught.message : "Unable to load your saved CV. Please retry.");
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [token, attempt]);
+
+  return (
+    <main className="main-content jobs-page jobs-list-page my-cv-page">
+      {preview && (
+        <button
+          type="button"
+          className="text-button job-back"
+          onClick={() => setPreview(false)}
+        >
+          Back to My CV
+        </button>
+      )}
+      <div className="jobs-heading">
+        <h1>{preview ? "Current CV" : "My CV"}</h1>
+      </div>
+      {loading ? (
+        <p className="jobs-message" role="status">Loading saved CV…</p>
+      ) : error ? (
+        <div className="jobs-message">
+          <p role="alert">Could not load saved CV: {error}</p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setError(null);
+              setLoading(true);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      ) : text === null ? (
+        <p className="jobs-message">No CV saved yet.</p>
+      ) : preview ? (
+        <section className="saved-cv-preview" aria-label="Saved CV text">
+          <p>{text}</p>
+        </section>
+      ) : (
+        <section
+          className="current-cv-strip"
+          aria-labelledby="current-cv-heading"
+        >
+          <div className="current-cv-summary">
+            <Icon name="document" />
+            <h2 id="current-cv-heading">Current CV</h2>
+            <span className="comparison-saved-status">Saved</span>
+          </div>
+          <button
+            type="button"
+            className="cv-save job-primary"
+            aria-label="View current CV"
+            onClick={() => setPreview(true)}
+          >
+            View <Icon name="arrow-right" />
+          </button>
+        </section>
+      )}
+    </main>
+  );
+}
+
 function ComparisonsView({ token }: { token: string }) {
   const [entries, setEntries] = useState<ComparisonSummary[]>([]);
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
@@ -1667,6 +1758,7 @@ function App() {
   const [jobsVisited, setJobsVisited] = useState(false);
   const [jobsScreen, setJobsScreen] = useState<"jobs" | "add-job">("jobs");
   const [comparisonVisit, setComparisonVisit] = useState(0);
+  const [comparisonsVisited, setComparisonsVisited] = useState(false);
   const isPersistingRef = useRef(false);
   const comparisonRequests = useRef(new Set<number>());
   const isComparing = savedJob
@@ -1681,6 +1773,7 @@ function App() {
     setCurrentComparisonJobId(null);
     setJobsVisited(false);
     setJobsScreen("jobs");
+    setComparisonsVisited(false);
   }
 
   useEffect(() => {
@@ -1986,9 +2079,19 @@ function App() {
                 Jobs
               </button>
             </li>
-            <li className="nav-item">
-              <Icon name="document" />
-              My CV
+            <li>
+              <button
+                type="button"
+                className="nav-button"
+                aria-current={view === "my-cv" ? "page" : undefined}
+                onClick={() => {
+                  if (token && user) setView("my-cv");
+                  else openLogin();
+                }}
+              >
+                <Icon name="document" />
+                My CV
+              </button>
             </li>
             <li>
               <button
@@ -1998,7 +2101,10 @@ function App() {
                   ? "page" : undefined}
                 onClick={() => {
                   if (token && user) {
-                    setComparisonVisit((value) => value + 1);
+                    if (view === "comparisons") {
+                      setComparisonVisit((value) => value + 1);
+                    }
+                    setComparisonsVisited(true);
                     setView("comparisons");
                   }
                   else openLogin();
@@ -2073,13 +2179,19 @@ function App() {
           />
         </Activity>
       )}
-      {view === "comparisons" && token && user && (
-        <ComparisonsView
-          key={`${user.id}:${token}:${comparisonVisit}`}
-          token={token}
-        />
+      {comparisonsVisited && token && user && (
+        <Activity mode={view === "comparisons" ? "visible" : "hidden"}>
+          <ComparisonsView
+            key={`${user.id}:${token}:${comparisonVisit}`}
+            token={token}
+          />
+        </Activity>
       )}
-      {view !== "jobs" && view !== "add-job" && view !== "comparisons" && (
+      {view === "my-cv" && token && user && (
+        <MyCvView key={`${user.id}:${token}`} token={token} />
+      )}
+      {view !== "jobs" && view !== "add-job" && view !== "comparisons"
+        && view !== "my-cv" && (
         <main
           className={comparison
             ? "main-content main-content--comparison"

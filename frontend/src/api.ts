@@ -77,6 +77,22 @@ function authorization(token: string): HeadersInit {
   return { Authorization: `Bearer ${token}` }
 }
 
+export async function getSavedCv(
+  token: string, signal: AbortSignal,
+): Promise<string | null> {
+  const response = await fetch(`${API_URL}/cv`, {
+    method: 'GET', headers: authorization(token), signal,
+  })
+  if (response.status === 404) return null
+  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  if (
+    response.status === 206 || typeof body !== 'object' || body === null ||
+    !('text' in body) || typeof body.text !== 'string'
+  ) throw new ApiError('The saved CV response was invalid. Please retry.')
+  return body.text
+}
+
 export async function saveCvText(token: string, text: string): Promise<void> {
   const response = await fetch(`${API_URL}/cv`, {
     method: 'PUT',
