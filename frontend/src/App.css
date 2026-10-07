@@ -586,6 +586,24 @@
   overflow-wrap: anywhere;
   line-height: 1.75;
 }
+.my-cv-page[hidden] {
+  display: none;
+}
+.my-cv-page .saved-cv-form {
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+.saved-cv-form p {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.saved-cv-form .job-primary {
+  justify-self: end;
+  margin-top: 0;
+  border-radius: 4px;
+}
 .account-email {
   overflow: hidden;
   margin: auto var(--space-3) var(--space-3);

@@ -53,6 +53,7 @@ type ComparisonRun = {
   result: ComparisonResult | null;
   error: string | null;
   version: number;
+  cvOutdated?: boolean;
 };
 type ComparisonOutcome = { result: ComparisonResult } | { error: string };
 type JobComparisonActions = {
@@ -86,6 +87,7 @@ type DraftProps = {
 };
 
 const MAX_CV_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_CV_TEXT_LENGTH = 50_000;
 const MAX_JOB_TITLE_LENGTH = 200;
 const MAX_JOB_COMPANY_LENGTH = 200;
 const MAX_JOB_DESCRIPTION_LENGTH = 20_000;
@@ -847,8 +849,10 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   const [attempt, setAttempt] = useState(0);
   const [selection, setSelection] = useState<RequirementSelection | null>(null);
   const [loadedVersion, setLoadedVersion] = useState(historyVersion);
+  const [loadedCache, setLoadedCache] = useState(historyCache);
   const currentResult = actions?.currentResult;
-  const historyLoading = loading || loadedVersion !== historyVersion;
+  const historyLoading = loading || loadedVersion !== historyVersion
+    || loadedCache !== historyCache;
   const active = useRef(0);
   useEffect(() => {
     active.current += 1;
@@ -856,14 +860,21 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   }, []);
   useEffect(() => {
     if (currentResult) return;
-    if (comparisonId === null && attempt === 0
-      && historyCache.get(job.id)?.version === historyVersion) return;
+    const cachedHistory = historyCache.get(job.id);
     const controller = new AbortController();
     let active = true;
-    const request = comparisonId === null
-      ? getSavedComparisons(token, job.id, controller.signal)
-      : getSavedComparison(token, job.id, comparisonId, controller.signal)
-        .then((entry) => [entry]);
+    let request: Promise<SavedComparison[]>;
+    if (comparisonId === null && attempt === 0
+      && cachedHistory?.version === historyVersion) {
+      request = cachedHistory.error
+        ? Promise.reject(new ApiError(cachedHistory.error))
+        : Promise.resolve(cachedHistory.entries);
+    } else {
+      request = comparisonId === null
+        ? getSavedComparisons(token, job.id, controller.signal)
+        : getSavedComparison(token, job.id, comparisonId, controller.signal)
+          .then((entry) => [entry]);
+    }
     void request.then(
       (result) => {
         if (!active) return;
@@ -875,6 +886,7 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
         setEntries(result);
         setError(null);
         setLoadedVersion(historyVersion);
+        setLoadedCache(historyCache);
         setLoading(false);
       },
       (caught: unknown) => {
@@ -889,6 +901,7 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
         }
         setError(message);
         setLoadedVersion(historyVersion);
+        setLoadedCache(historyCache);
         setLoading(false);
       },
     );
@@ -927,7 +940,10 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   ) : null;
   if (comparisonId !== null || currentResult) {
     const entry = entries[0];
-    const result = currentResult ?? entry?.result;
+    const result = currentResult
+      ?? (historyLoading || error ? undefined : entry?.result);
+    const cvOutdated = currentResult
+      ? actions?.run?.cvOutdated : entry?.cv_outdated;
     return (
       <main className="main-content main-content--comparison">
         <button
@@ -954,7 +970,7 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
         {progress}
         {result && (
           <>
-            {entry?.cv_outdated && (
+            {cvOutdated && (
               <p className="comparison-notice saved-cv-notice" role="status">
                 The CV used for this comparison is no longer the current
                 saved CV.
@@ -1041,12 +1057,58 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   );
 }
 
-function MyCvView({ token }: { token: string }) {
+function MyCvView({ token, visible, onSaved }: {
+  token: string;
+  visible: boolean;
+  onSaved: () => void;
+}) {
   const [text, setText] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const saveRequest = useRef<AbortController | null>(null);
+
+  useEffect(() => () => { saveRequest.current?.abort(); }, []);
+
+  async function save() {
+    if (saveRequest.current || loading || error) return;
+    setSaved(false);
+    if (!draft.trim()) {
+      setSaveError("Enter your CV text before saving.");
+      return;
+    }
+    // Python's limit counts Unicode code points, not UTF-16 code units.
+    if ([...draft].length > MAX_CV_TEXT_LENGTH) {
+      setSaveError("CV text must be 50,000 characters or fewer.");
+      return;
+    }
+    const controller = new AbortController();
+    saveRequest.current = controller;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await saveCvText(token, draft, controller.signal);
+      if (controller.signal.aborted) return;
+      setText(draft);
+      setDraft("");
+      setSaved(true);
+      onSaved();
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      setSaveError(caught instanceof ApiError
+        ? caught.message : "Unable to save your CV. Please try again.");
+    } finally {
+      if (!controller.signal.aborted) {
+        saveRequest.current = null;
+        setSaving(false);
+      }
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1071,7 +1133,10 @@ function MyCvView({ token }: { token: string }) {
   }, [token, attempt]);
 
   return (
-    <main className="main-content jobs-page jobs-list-page my-cv-page">
+    <main
+      className="main-content jobs-page jobs-list-page my-cv-page"
+      hidden={!visible}
+    >
       {preview && (
         <button
           type="button"
@@ -1127,18 +1192,54 @@ function MyCvView({ token }: { token: string }) {
           </button>
         </section>
       )}
+      {!preview && !loading && !error && (
+        <section className="cv-paste saved-cv-form" aria-label="Save CV text">
+          <label htmlFor="saved-cv-draft">CV text</label>
+          <p id="saved-cv-help">
+            Paste your CV text (up to 50,000 characters).
+            {text !== null && " Your current CV will be replaced when you save."}
+          </p>
+          <textarea
+            id="saved-cv-draft"
+            aria-describedby="saved-cv-help"
+            aria-invalid={Boolean(saveError)}
+            value={draft}
+            onChange={(event) => {
+              setDraft(event.target.value);
+              setSaveError(null);
+              setSaved(false);
+            }}
+            disabled={saving}
+            required
+          />
+          {saveError && <p className="form-error" role="alert">{saveError}</p>}
+          {(saving || saved) && (
+            <p role="status">{saving ? "Saving your CV…" : "CV saved."}</p>
+          )}
+          <button
+            type="button"
+            className="cv-save job-primary"
+            disabled={saving}
+            onClick={() => void save()}
+          >
+            {saving ? "Saving…" : text === null ? "Save CV" : "Save replacement"}
+          </button>
+        </section>
+      )}
     </main>
   );
 }
 
-function ComparisonsView({ token }: { token: string }) {
+function ComparisonsView({ token, historyCache }: {
+  token: string;
+  historyCache: JobHistoryCache;
+}) {
   const [entries, setEntries] = useState<ComparisonSummary[]>([]);
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [selected, setSelected] = useState<ComparisonSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [historyCache] = useState<JobHistoryCache>(() => new Map());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1533,7 +1634,7 @@ function AddJobForm({ token, onCancel, onSaved }: {
 
 function JobsView({ token, selectedJobId, onSelectJob,
   comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs,
-  comparisonActions, comparisonRuns }: {
+  comparisonActions, comparisonRuns, historyCache }: {
   token: string;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
@@ -1544,6 +1645,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
   onShowJobs: () => void;
   comparisonActions: JobComparisonActions;
   comparisonRuns: Record<number, ComparisonRun>;
+  historyCache: JobHistoryCache;
 }) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1551,7 +1653,6 @@ function JobsView({ token, selectedJobId, onSelectJob,
   const [attempt, setAttempt] = useState(0);
   const [createdJobId, setCreatedJobId] = useState<number | null>(null);
   const [comparisonFromList, setComparisonFromList] = useState(false);
-  const [historyCache] = useState<JobHistoryCache>(() => new Map());
 
   useEffect(() => {
     const controller = new AbortController();
@@ -1759,6 +1860,12 @@ function App() {
   const [jobsScreen, setJobsScreen] = useState<"jobs" | "add-job">("jobs");
   const [comparisonVisit, setComparisonVisit] = useState(0);
   const [comparisonsVisited, setComparisonsVisited] = useState(false);
+  const [cvVisited, setCvVisited] = useState(false);
+  const [historyCache, setHistoryCache] = useState<JobHistoryCache>(
+    () => new Map(),
+  );
+  const [comparisonCvOutdated, setComparisonCvOutdated] = useState(false);
+  const cvVersion = useRef(0);
   const isPersistingRef = useRef(false);
   const comparisonRequests = useRef(new Set<number>());
   const isComparing = savedJob
@@ -1774,6 +1881,10 @@ function App() {
     setJobsVisited(false);
     setJobsScreen("jobs");
     setComparisonsVisited(false);
+    setCvVisited(false);
+    setHistoryCache(new Map());
+    setComparisonCvOutdated(false);
+    cvVersion.current = 0;
   }
 
   useEffect(() => {
@@ -1864,12 +1975,14 @@ function App() {
     const requests = comparisonRequests.current;
     if (!token || requests.has(jobId)) return null;
     requests.add(jobId);
+    const sourceVersion = cvVersion.current;
     setComparisonRuns((current) => ({
       ...current,
       [jobId]: {
         pending: true, error: null,
         result: current[jobId]?.result ?? null,
         version: current[jobId]?.version ?? 0,
+        cvOutdated: current[jobId]?.cvOutdated,
       },
     }));
     try {
@@ -1880,6 +1993,7 @@ function App() {
         [jobId]: {
           pending: false, error: null, result,
           version: (current[jobId]?.version ?? 0) + 1,
+          cvOutdated: cvVersion.current !== sourceVersion,
         },
       }));
       return { result };
@@ -1899,8 +2013,12 @@ function App() {
   async function runComparison() {
     if (!savedJob || comparisonRequests.current.has(savedJob.id)) return;
     setComparisonError(null);
+    const sourceVersion = cvVersion.current;
     const outcome = await requestComparison(savedJob.id);
-    if (outcome && "result" in outcome) setComparison(outcome.result);
+    if (outcome && "result" in outcome) {
+      setComparison(outcome.result);
+      setComparisonCvOutdated(cvVersion.current !== sourceVersion);
+    }
     else if (outcome) setComparisonError(outcome.error);
   }
   async function handleSignup(
@@ -2085,7 +2203,10 @@ function App() {
                 className="nav-button"
                 aria-current={view === "my-cv" ? "page" : undefined}
                 onClick={() => {
-                  if (token && user) setView("my-cv");
+                  if (token && user) {
+                    setCvVisited(true);
+                    setView("my-cv");
+                  }
                   else openLogin();
                 }}
               >
@@ -2150,6 +2271,7 @@ function App() {
             key={`${user.id}:${token}`}
             token={token}
             selectedJobId={selectedJobId}
+            historyCache={historyCache}
             onSelectJob={setSelectedJobId}
             comparisonId={savedComparisonId}
             comparisonRuns={comparisonRuns}
@@ -2184,11 +2306,26 @@ function App() {
           <ComparisonsView
             key={`${user.id}:${token}:${comparisonVisit}`}
             token={token}
+            historyCache={historyCache}
           />
         </Activity>
       )}
-      {view === "my-cv" && token && user && (
-        <MyCvView key={`${user.id}:${token}`} token={token} />
+      {cvVisited && token && user && (
+        <MyCvView
+          key={`${user.id}:${token}`}
+          token={token}
+          visible={view === "my-cv"}
+          onSaved={() => {
+            cvVersion.current += 1;
+            setHistoryCache(new Map());
+            setComparisonCvOutdated(true);
+            setComparisonRuns((current) => Object.fromEntries(
+              Object.entries(current).map(([id, run]) => [
+                id, { ...run, cvOutdated: true },
+              ]),
+            ));
+          }}
+        />
       )}
       {view !== "jobs" && view !== "add-job" && view !== "comparisons"
         && view !== "my-cv" && (
@@ -2255,11 +2392,19 @@ function App() {
                 <p role="alert">Comparison unavailable: {comparisonError}</p>
               )}
               {comparison && (
-                <ComparisonResults
-                  comparison={comparison}
-                  requirementSelection={requirementSelection}
-                  setRequirementSelection={setRequirementSelection}
-                />
+                <>
+                  {comparisonCvOutdated && (
+                    <p className="comparison-notice saved-cv-notice" role="status">
+                      The CV used for this comparison is no longer the current
+                      saved CV.
+                    </p>
+                  )}
+                  <ComparisonResults
+                    comparison={comparison}
+                    requirementSelection={requirementSelection}
+                    setRequirementSelection={setRequirementSelection}
+                  />
+                </>
               )}
             </section>
           )}

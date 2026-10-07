@@ -93,11 +93,14 @@ export async function getSavedCv(
   return body.text
 }
 
-export async function saveCvText(token: string, text: string): Promise<void> {
+export async function saveCvText(
+  token: string, text: string, signal?: AbortSignal,
+): Promise<void> {
   const response = await fetch(`${API_URL}/cv`, {
     method: 'PUT',
     headers: { ...authorization(token), 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
+    signal,
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
 }
