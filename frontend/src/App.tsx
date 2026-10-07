@@ -1,5 +1,6 @@
 import {
   Activity,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -330,9 +331,19 @@ function StartWithCV({
   onJobDescriptionChange,
   onInputMethodChange,
   onSave,
-}: DraftProps) {
+  compareFlow = false,
+  busy = false,
+  jobSaved = false,
+  cvSaved = false,
+}: DraftProps & {
+  compareFlow?: boolean;
+  busy?: boolean;
+  jobSaved?: boolean;
+  cvSaved?: boolean;
+}) {
   const [fileError, setFileError] = useState<string | null>(null);
   function selectFile(file: File | undefined) {
+    if (busy || cvSaved) return;
     if (!file) return;
     const error = cvFileError(file);
     onFileChange(error ? null : file);
@@ -345,12 +356,40 @@ function StartWithCV({
     event.preventDefault();
     selectFile(event.dataTransfer.files[0]);
   }
+  const jobFields = (
+    <fieldset className="starter-fields job-description" disabled={busy || jobSaved}>
+      {compareFlow && <legend>1. Job details</legend>}
+      <div className="job-details">
+        <div>
+          <label htmlFor="job-title">Job title</label>
+          <input id="job-title" value={jobTitle}
+            onChange={(event) => onJobTitleChange(event.target.value)}
+            maxLength={MAX_JOB_TITLE_LENGTH} />
+        </div>
+        <div>
+          <label htmlFor="company-name">Company name</label>
+          <input id="company-name" value={companyName}
+            onChange={(event) => onCompanyNameChange(event.target.value)}
+            maxLength={MAX_JOB_COMPANY_LENGTH} />
+        </div>
+      </div>
+      <h3>Add a job description</h3>
+      <label className="visually-hidden" htmlFor="job-description">Job description</label>
+      <textarea id="job-description" value={jobDescription}
+        onChange={(event) => onJobDescriptionChange(event.target.value)}
+        placeholder="Paste the full job description, responsibilities, and requirements here."
+        rows={10} />
+    </fieldset>
+  );
   return (
     <section className="cv-starter" aria-labelledby="cv-starter-heading">
       <div className="cv-starter__intro">
-        <h2 id="cv-starter-heading">Start with your CV</h2>
-        <p>Add a PDF or DOCX, or paste your CV text.</p>
+        <h2 id="cv-starter-heading">{compareFlow ? "Start a comparison" : "Start with your CV"}</h2>
+        <p>{compareFlow ? "Add job details and your CV, then compare." : "Add a PDF or DOCX, or paste your CV text."}</p>
       </div>
+      {compareFlow && jobFields}
+      <fieldset className="starter-fields" disabled={busy || cvSaved}>
+      {compareFlow && <legend>2. Your CV</legend>}
       <div className="cv-starter__grid">
         <div className="cv-upload">
           <h3>Upload your CV</h3>
@@ -402,41 +441,10 @@ function StartWithCV({
           )}
         </div>
       </div>
-      <div className="job-description">
-        <div className="job-details">
-          <div>
-            <label htmlFor="job-title">Job title</label>
-            <input
-              id="job-title"
-              value={jobTitle}
-              onChange={(event) => onJobTitleChange(event.target.value)}
-              maxLength={MAX_JOB_TITLE_LENGTH}
-            />
-          </div>
-          <div>
-            <label htmlFor="company-name">Company name</label>
-            <input
-              id="company-name"
-              value={companyName}
-              onChange={(event) => onCompanyNameChange(event.target.value)}
-              maxLength={MAX_JOB_COMPANY_LENGTH}
-            />
-          </div>
-        </div>
-        <h3>Add a job description</h3>
-        <label className="visually-hidden" htmlFor="job-description">
-          Job description
-        </label>
-        <textarea
-          id="job-description"
-          value={jobDescription}
-          onChange={(event) => onJobDescriptionChange(event.target.value)}
-          placeholder="Paste the full job description, responsibilities, and requirements here."
-          rows={10}
-        />
-      </div>
+      </fieldset>
+      {!compareFlow && jobFields}
       {cvFile && cvText.trim() && (
-        <fieldset className="cv-method">
+        <fieldset className="cv-method" disabled={busy || cvSaved}>
           <legend>Which CV should we use?</legend>
           <p>Choose one CV source before saving.</p>
           <label>
@@ -460,12 +468,14 @@ function StartWithCV({
         </fieldset>
       )}
       <div className="cv-starter__actions">
+        {compareFlow && <h3>3. Compare</h3>}
         <button
           type="button"
           className="cv-save"
           onClick={() => onSave(fileError)}
+          disabled={busy}
         >
-          Save
+          {compareFlow ? busy ? "Working…" : "Compare" : "Save"}
         </button>
       </div>
     </section>
@@ -1411,7 +1421,7 @@ function DashboardCvSection({ token, savedText, onSaved }: {
   }
 
   if (preview && savedText !== null) return (
-    <section className="dashboard-start" aria-labelledby="dashboard-cv-heading">
+    <section className="dashboard-start__section" aria-labelledby="dashboard-cv-heading">
       <button type="button" className="text-button job-back" onClick={() => setPreview(false)}>
         Back to Dashboard
       </button>
@@ -1420,9 +1430,7 @@ function DashboardCvSection({ token, savedText, onSaved }: {
     </section>
   );
   return (
-    <section className="dashboard-start" aria-labelledby="dashboard-cv-heading">
-      <h2 id="dashboard-cv-heading">Start a comparison</h2>
-      <div className="dashboard-start__section">
+    <section className="dashboard-start__section" aria-labelledby="dashboard-cv-heading">
         <h3>Your CV</h3>
         {!editing && savedText !== null ? (
           <div className="current-cv-strip">
@@ -1489,20 +1497,256 @@ function DashboardCvSection({ token, savedText, onSaved }: {
             </div>
           </section>
         )}
-      </div>
     </section>
   );
 }
 
-function DashboardOverview({ token, onNavigate, onView, onCvSaved }: {
+function DashboardJobSection({ token, jobs, preferredJobId, onSaved }: {
+  token: string;
+  jobs: SavedJob[];
+  preferredJobId: number | null;
+  onSaved: (job: SavedJob) => void;
+}) {
+  const [mode, setMode] = useState<"saved" | "add">(
+    jobs.length === 0 ? "add" : "saved",
+  );
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [title, setTitle] = useState("");
+  const [company, setCompany] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  const appliedPreferred = useRef<number | null>(null);
+  const selected = jobs.find((job) => job.id === selectedId) ?? null;
+
+  useEffect(() => () => { request.current?.abort(); }, []);
+  useEffect(() => {
+    if (preferredJobId === null || appliedPreferred.current === preferredJobId
+      || !jobs.some((job) => job.id === preferredJobId)) return;
+    appliedPreferred.current = preferredJobId;
+    setSelectedId(preferredJobId);
+    setMode("saved");
+  }, [jobs, preferredJobId]);
+  async function save() {
+    if (request.current) return;
+    if (!title.trim() || !company.trim() || !description.trim()) {
+      setError("Enter a job title, company name and description, not just spaces.");
+      return;
+    }
+    if (title.length > MAX_JOB_TITLE_LENGTH || company.length > MAX_JOB_COMPANY_LENGTH) {
+      setError("Job title and company name must each be 200 characters or fewer.");
+      return;
+    }
+    if (description.length > MAX_JOB_DESCRIPTION_LENGTH) {
+      setError("Job description must be 20,000 characters or fewer.");
+      return;
+    }
+    const controller = new AbortController();
+    request.current = controller;
+    setSaving(true);
+    setError(null);
+    try {
+      const job = await createJob(token, {
+        title: title.trim(), company_name: company.trim(), description,
+      }, controller.signal);
+      if (controller.signal.aborted) return;
+      setTitle(""); setCompany(""); setDescription("");
+      setSelectedId(job.id);
+      setMode("saved");
+      onSaved(job);
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(caught instanceof ApiError
+        ? caught.message : "Unable to save this job. Your entries are still here; try again.");
+    } finally {
+      if (!controller.signal.aborted) {
+        request.current = null;
+        setSaving(false);
+      }
+    }
+  }
+
+  return (
+    <section className="dashboard-start__section" aria-labelledby="dashboard-job-heading">
+      <h3 id="dashboard-job-heading">Your job</h3>
+      {selected && mode === "saved" ? (
+        <div className="dashboard-job-summary">
+          <div><strong>{selected.title}</strong><span>{selected.company_name}</span></div>
+          <div className="dashboard-cv-actions">
+            <button type="button" className="text-button" onClick={() => setSelectedId(null)}>Change</button>
+            <button type="button" className="text-button" onClick={() => setMode("add")}>Add new job</button>
+          </div>
+        </div>
+      ) : mode === "saved" ? (
+        <>
+          {jobs.length === 0 ? (
+            <p>No saved jobs yet.</p>
+          ) : (
+            <label className="dashboard-job-picker" htmlFor="dashboard-saved-job">
+              Use saved job
+              <select id="dashboard-saved-job" value={selectedId ?? ""}
+                onChange={(event) => setSelectedId(event.target.value ? Number(event.target.value) : null)}>
+                <option value="">Select a saved job</option>
+                {jobs.map((job) => <option key={job.id} value={job.id}>{job.title} — {job.company_name}</option>)}
+              </select>
+            </label>
+          )}
+          <button type="button" className="text-button" onClick={() => setMode("add")}>Add new job</button>
+        </>
+      ) : (
+        <div className="dashboard-job-form">
+          <div className="job-details">
+            <div><label htmlFor="dashboard-job-title">Job title</label><input id="dashboard-job-title" value={title} disabled={saving} maxLength={MAX_JOB_TITLE_LENGTH} onChange={(event) => setTitle(event.target.value)} /></div>
+            <div><label htmlFor="dashboard-job-company">Company name</label><input id="dashboard-job-company" value={company} disabled={saving} maxLength={MAX_JOB_COMPANY_LENGTH} onChange={(event) => setCompany(event.target.value)} /></div>
+          </div>
+          <label htmlFor="dashboard-job-description">Job description</label>
+          <textarea id="dashboard-job-description" value={description} disabled={saving} maxLength={MAX_JOB_DESCRIPTION_LENGTH} onChange={(event) => setDescription(event.target.value)} />
+          {error && <p className="form-error" role="alert">{error}</p>}
+          {saving && <p role="status">Saving your job…</p>}
+          <div className="dashboard-cv-actions">
+            {jobs.length > 0 && <button type="button" className="text-button" disabled={saving} onClick={() => setMode("saved")}>Use saved job</button>}
+            <button type="button" className="cv-save job-primary" disabled={saving} onClick={() => void save()}>{saving ? "Saving…" : "Save job"}</button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function EmptyDashboardFlow({ token, visible, onCvSaved, onJobSaved, onCompare,
+  onDone, comparisonRuns }: {
+  token: string;
+  visible: boolean;
+  onCvSaved: () => void;
+  onJobSaved: () => void;
+  onCompare: JobComparisonActions["onCompare"];
+  onDone: () => void;
+  comparisonRuns: Record<number, ComparisonRun>;
+}) {
+  const [cvFile, setCvFile] = useState<File | null>(null);
+  const [cvText, setCvText] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
+  const [companyName, setCompanyName] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [method, setMethod] = useState<CvInputMethod>(null);
+  const [savedJob, setSavedJob] = useState<SavedJob | null>(null);
+  const [cvSaved, setCvSaved] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<ComparisonResult | null>(null);
+  const [selection, setSelection] = useState<RequirementSelection | null>(null);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => { request.current?.abort(); }, []);
+
+  async function submit(fileError: string | null) {
+    if (request.current) return;
+    const errors: string[] = [];
+    if (!savedJob) {
+      if (!jobTitle.trim() || !companyName.trim() || !jobDescription.trim()) {
+        errors.push("Enter a job title, company name and description, not just spaces.");
+      }
+      if ([...jobTitle.trim()].length > MAX_JOB_TITLE_LENGTH
+        || [...companyName.trim()].length > MAX_JOB_COMPANY_LENGTH) {
+        errors.push("Job title and company name must each be 200 characters or fewer.");
+      }
+      if ([...jobDescription.trim()].length > MAX_JOB_DESCRIPTION_LENGTH) {
+        errors.push("Job description must be 20,000 characters or fewer.");
+      }
+    }
+    if (!cvSaved) {
+      if (fileError || (!cvFile && !cvText.trim())) errors.push("Add a valid CV file or paste your CV text.");
+      if (cvFile && cvText.trim() && !method) errors.push("Choose whether to use the uploaded file or pasted CV text.");
+      if ((!cvFile || method === "text") && [...cvText.trim()].length > MAX_CV_TEXT_LENGTH) {
+        errors.push("CV text must be 50,000 characters or fewer.");
+      }
+    }
+    setError(errors.length ? errors.join(" ") : null);
+    if (errors.length) return;
+    const controller = new AbortController();
+    request.current = controller;
+    let job = savedJob;
+    let hasCv = cvSaved;
+    try {
+      if (!job) {
+        setProgress("Saving your job details…");
+        job = await createJob(token, {
+          title: jobTitle.trim(), company_name: companyName.trim(),
+          description: jobDescription.trim(),
+        }, controller.signal);
+        if (controller.signal.aborted) return;
+        setSavedJob(job);
+        onJobSaved();
+      }
+      if (!hasCv) {
+        setProgress("Saving your CV…");
+        if (cvFile && method !== "text") await uploadCv(token, cvFile, controller.signal);
+        else await saveCvText(token, cvText.trim(), controller.signal);
+        if (controller.signal.aborted) return;
+        hasCv = true;
+        setCvSaved(true);
+        onCvSaved();
+      }
+      setProgress("Comparing your CV and job…");
+      const outcome = await onCompare(job.id);
+      if (controller.signal.aborted) return;
+      if (outcome && "result" in outcome) setResult(outcome.result);
+      else setError("Your job and CV are saved, but the comparison failed. "
+        + (outcome && "error" in outcome ? outcome.error : "Please try again.")
+        + " Click Compare to retry using the saved details.");
+    } catch (caught) {
+      if (controller.signal.aborted) return;
+      const message = caught instanceof ApiError ? caught.message : "Please try again.";
+      setError(job && !hasCv
+        ? `Your job is saved, but your CV could not be saved. ${message} Click Compare to retry; your job will be reused.`
+        : `Could not save your job. ${message} Your entries are still here.`);
+    } finally {
+      if (!controller.signal.aborted) {
+        request.current = null;
+        setProgress(null);
+      }
+    }
+  }
+
+  return (
+    <main className="main-content jobs-page jobs-list-page empty-dashboard" hidden={!visible}>
+      <div className="jobs-heading"><h1>Dashboard</h1></div>
+      {result ? (
+        <>
+          <h2 id="comparison-heading">Comparison results</h2>
+          <p>{savedJob?.title} at {savedJob?.company_name}</p>
+          {savedJob && comparisonRuns[savedJob.id]?.cvOutdated && (
+            <p className="comparison-notice" role="status">The CV used for this comparison is no longer the current saved CV.</p>
+          )}
+          <ComparisonResults comparison={result} requirementSelection={selection} setRequirementSelection={setSelection} />
+          <button type="button" className="text-button" onClick={onDone}>Back to Dashboard overview</button>
+        </>
+      ) : (
+        <StartWithCV compareFlow busy={progress !== null} jobSaved={savedJob !== null} cvSaved={cvSaved}
+          cvFile={cvFile} cvText={cvText} jobTitle={jobTitle} companyName={companyName}
+          jobDescription={jobDescription} selectedInputMethod={method}
+          onFileChange={setCvFile} onCvTextChange={setCvText} onJobTitleChange={setJobTitle}
+          onCompanyNameChange={setCompanyName} onJobDescriptionChange={setJobDescription}
+          onInputMethodChange={setMethod} onSave={(fileError) => void submit(fileError)} />
+      )}
+      {progress && <p role="status">{progress}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
+    </main>
+  );
+}
+
+function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
+  preferredJobId, onEmpty }: {
   token: string;
   onNavigate: (section: "my-cv" | "jobs" | "comparisons") => void;
   onView: (entry: ComparisonSummary) => void;
   onCvSaved: () => void;
+  onJobSaved: () => void;
+  preferredJobId: number | null;
+  onEmpty: () => void;
 }) {
   const [data, setData] = useState<{
     cvText: string | null;
-    jobCount: number;
+    jobs: SavedJob[];
     comparisons: ComparisonSummary[];
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1518,8 +1762,9 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved }: {
     ]).then(
       ([cv, jobs, comparisons]) => {
         if (!active) return;
+        if (cv === null && jobs.length === 0 && preferredJobId === null) onEmpty();
         setData({
-          cvText: cv, jobCount: jobs.length,
+          cvText: cv, jobs,
           comparisons: [...comparisons].sort((left, right) =>
             Date.parse(right.created_at) - Date.parse(left.created_at)
               || right.id - left.id),
@@ -1535,13 +1780,13 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved }: {
       active = false;
       controller.abort();
     };
-  }, [token, attempt]);
+  }, [token, attempt, onEmpty, preferredJobId]);
 
   const cards = [
     { section: "my-cv", icon: "document", label: "My CV",
       value: data?.cvText !== null ? "Saved" : "Not added" },
     { section: "jobs", icon: "briefcase", label: "Saved jobs",
-      value: data?.jobCount },
+      value: data?.jobs.length },
     { section: "comparisons", icon: "arrows", label: "Comparisons",
       value: data?.comparisons.length },
   ] as const;
@@ -1577,10 +1822,19 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved }: {
           </button>
         ))}
       </div>
-      {data && <DashboardCvSection token={token} savedText={data.cvText} onSaved={(text) => {
-        setData((current) => current ? { ...current, cvText: text } : current);
-        onCvSaved();
-      }} />}
+      {data && <section className="dashboard-start" aria-labelledby="dashboard-start-heading">
+        <h2 id="dashboard-start-heading">Start a comparison</h2>
+        <DashboardCvSection token={token} savedText={data.cvText} onSaved={(text) => {
+          setData((current) => current ? { ...current, cvText: text } : current);
+          onCvSaved();
+        }} />
+        <DashboardJobSection token={token} jobs={data.jobs} preferredJobId={preferredJobId} onSaved={(job) => {
+          setData((current) => current ? {
+            ...current, jobs: [job, ...current.jobs.filter((item) => item.id !== job.id)],
+          } : current);
+          onJobSaved();
+        }} />
+      </section>}
       <section className="dashboard-recent" aria-labelledby="recent-heading">
         <div className="jobs-heading">
           <h2 id="recent-heading">Recent comparisons</h2>
@@ -2270,6 +2524,10 @@ function App() {
   );
   const [comparisonCvOutdated, setComparisonCvOutdated] = useState(false);
   const [overviewVersion, setOverviewVersion] = useState(0);
+  const [jobsVersion, setJobsVersion] = useState(0);
+  const [emptyDashboard, setEmptyDashboard] = useState(false);
+  const [emptyCvVersion, setEmptyCvVersion] = useState(0);
+  const showEmptyDashboard = useCallback(() => setEmptyDashboard(true), []);
   const [dashboardSelection, setDashboardSelection] =
     useState<ComparisonSummary | null>(null);
   const cvVersion = useRef(0);
@@ -2292,6 +2550,9 @@ function App() {
     setHistoryCache(new Map());
     setComparisonCvOutdated(false);
     setOverviewVersion(0);
+    setJobsVersion(0);
+    setEmptyDashboard(false);
+    setEmptyCvVersion(0);
     setDashboardSelection(null);
     cvVersion.current = 0;
   }
@@ -2691,11 +2952,14 @@ function App() {
         <Activity mode={view === "jobs" || view === "add-job"
           ? "visible" : "hidden"}>
           <JobsView
-            key={`${user.id}:${token}`}
+            key={`${user.id}:${token}:${jobsVersion}`}
             token={token}
             selectedJobId={selectedJobId}
             historyCache={historyCache}
-            onJobSaved={() => setOverviewVersion((value) => value + 1)}
+            onJobSaved={() => {
+              setOverviewVersion((value) => value + 1);
+              setJobsVersion((value) => value + 1);
+            }}
             onSelectJob={setSelectedJobId}
             comparisonId={savedComparisonId}
             comparisonRuns={comparisonRuns}
@@ -2736,20 +3000,23 @@ function App() {
       )}
       {cvVisited && token && user && (
         <MyCvView
-          key={`${user.id}:${token}`}
+          key={`${user.id}:${token}:${emptyCvVersion}`}
           token={token}
           visible={view === "my-cv"}
           onSaved={handleCvSaved}
         />
       )}
-      {token && user && !isSavingDraft && !saveError && !savedJob && (
-        <Activity mode={view === "dashboard" ? "visible" : "hidden"}>
+      {token && user && !isSavingDraft && !saveError && (
+        <Activity mode={view === "dashboard" && !emptyDashboard ? "visible" : "hidden"}>
           <main className="main-content jobs-page jobs-list-page dashboard-page">
             <div className="jobs-heading"><h1>Dashboard</h1></div>
             <DashboardOverview
               key={`${user.id}:${token}:${overviewVersion}`}
               token={token}
               onCvSaved={handleCvSaved}
+              onJobSaved={() => setJobsVersion((value) => value + 1)}
+              preferredJobId={savedJob?.id ?? null}
+              onEmpty={showEmptyDashboard}
               onNavigate={(section) => {
                 if (section === "my-cv") setCvVisited(true);
                 if (section === "jobs") setJobsVisited(true);
@@ -2766,6 +3033,24 @@ function App() {
             />
           </main>
         </Activity>
+      )}
+      {emptyDashboard && token && user && (
+        <EmptyDashboardFlow
+          key={`${user.id}:${token}`}
+          token={token}
+          visible={view === "dashboard"}
+          comparisonRuns={comparisonRuns}
+          onCompare={requestComparison}
+          onJobSaved={() => setJobsVersion((value) => value + 1)}
+          onCvSaved={() => {
+            handleCvSaved();
+            setEmptyCvVersion((value) => value + 1);
+          }}
+          onDone={() => {
+            setOverviewVersion((value) => value + 1);
+            setEmptyDashboard(false);
+          }}
+        />
       )}
       {view === "dashboard-comparison" && dashboardSelection && token && user && (
         <SavedComparisonHistory
@@ -2787,9 +3072,7 @@ function App() {
       )}
       {view === "dashboard" && (isSavingDraft || saveError || savedJob) && (
         <main className="main-content jobs-page jobs-list-page dashboard-page">
-          <div className="jobs-heading">
-            <h1>Dashboard</h1>
-          </div>
+          {!savedJob && <div className="jobs-heading"><h1>Dashboard</h1></div>}
           {isSavingDraft && (
             <p role="status">
               {saveStage === "cv"

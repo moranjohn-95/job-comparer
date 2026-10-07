@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import App from "./App";
 
@@ -546,8 +547,11 @@ test("uploads a selected CV file before saving the job", async () => {
 
 test("retries a failed job save without uploading the CV again", async () => {
   let jobAttempts = 0;
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (init?.method === "GET" && (url.endsWith("/jobs") || url.endsWith("/comparisons"))) {
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
     if (url.endsWith("/health")) return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
     if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
     if (url.endsWith("/me") || url.endsWith("/cv")) return Promise.resolve({ ok: true, json: async () => url.endsWith("/me") ? ({ id: 1, email: "ada@example.com" }) : ({ text: "Ada CV" }) });
@@ -563,7 +567,7 @@ test("retries a failed job save without uploading the CV again", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Job save failed");
   fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
   await screen.findByText("Job saved");
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/cv") && init?.method === "PUT")).toHaveLength(1);
   expect(jobAttempts).toBe(2);
 });
 
@@ -585,6 +589,132 @@ const comparisonResult = {
   interpretation:
     "A possible gap means evidence was not found in the saved CV; it does not establish that the person lacks the skill.",
 };
+
+function mockEmptyDashboard(options: { failUpload?: boolean; failCompare?: boolean } = {}) {
+  const job = { id: 73, title: "Engineer", company_name: "Example Company" };
+  let cv: string | null = null;
+  let jobSaved = false;
+  let compared = false;
+  const writes: string[] = [];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = new URL(String(input)).pathname;
+    const method = init?.method ?? "GET";
+    const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+    const fail = (detail: string) => ({ ok: false, status: 503, json: async () => ({ detail }) });
+    if (path === "/health") return ok({ status: "ok" });
+    if (path === "/login") return ok({ access_token: "token" });
+    expect(init?.headers).toMatchObject({ Authorization: "Bearer token" });
+    if (path === "/me") return ok({ id: 1, email: "ada@example.com" });
+    if (method !== "GET") writes.push(`${method} ${path}`);
+    if (path === "/jobs" && method === "POST") {
+      expect(JSON.parse(String(init?.body))).toEqual({ title: job.title,
+        company_name: job.company_name, description: "Build software." });
+      jobSaved = true;
+      return ok(job);
+    }
+    if (path === "/jobs") return ok(jobSaved ? [job] : []);
+    if (path === "/cv" && method === "PUT") {
+      cv = JSON.parse(String(init?.body)).text;
+      return ok({ text: cv });
+    }
+    if (path === "/cv/upload") {
+      expect(init?.body).toBeInstanceOf(FormData);
+      if (options.failUpload) {
+        options.failUpload = false;
+        return fail("Upload temporarily unavailable");
+      }
+      cv = "Uploaded CV text";
+      return ok({ text: cv });
+    }
+    if (path === "/cv") return cv === null
+      ? { ok: false, status: 404, json: async () => ({ detail: "CV not found" }) }
+      : ok({ text: cv });
+    if (path === "/jobs/73/compare") {
+      expect(jobSaved && cv !== null).toBe(true);
+      if (options.failCompare) {
+        options.failCompare = false;
+        return fail("AI provider is unavailable");
+      }
+      compared = true;
+      return ok(comparisonResult);
+    }
+    const entry = { id: 91, job_id: 73, created_at: "2026-10-07T12:00:00Z",
+      cv_outdated: false, result: comparisonResult };
+    if (path === "/jobs/73/comparisons") return ok(compared ? [entry] : []);
+    if (path === "/comparisons") return ok(compared ? [{ ...entry,
+      job_title: job.title, company_name: job.company_name,
+      matched_requirements_count: 1, possible_gaps_count: 1, needs_review_count: 0,
+    }] : []);
+    throw new Error(`Unexpected request: ${method} ${path}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return { writes, fetchMock };
+}
+
+async function openEmptyDashboard() {
+  render(<App />);
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("group", { name: "1. Job details" });
+  return within(screen.getByRole("main"));
+}
+
+function fillEmptyJob(main: ReturnType<typeof within>) {
+  fireEvent.change(main.getByLabelText("Job title"), { target: { value: "Engineer" } });
+  fireEvent.change(main.getByLabelText("Company name"), { target: { value: "Example Company" } });
+  fireEvent.change(main.getByLabelText("Job description"), { target: { value: "Build software." } });
+}
+
+test("empty Dashboard saves job and pasted CV before comparing and refreshes sidebar screens", async () => {
+  const { writes } = mockEmptyDashboard();
+  let main = await openEmptyDashboard();
+  expect(main.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument();
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(main.getByRole("alert")).toHaveTextContent("Enter a job title");
+  expect(writes).toEqual([]);
+  fillEmptyJob(main);
+  fireEvent.change(main.getByLabelText("Paste your CV text"), { target: { value: "My TypeScript CV" } });
+  // Visit both pages before saving to ensure their existing instances refresh.
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  await screen.findByText("You have no saved jobs yet.");
+  fireEvent.click(screen.getByRole("button", { name: "My CV" }));
+  await screen.findByText("No CV saved yet.");
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByText("You have no saved comparisons yet.");
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  main = within(screen.getByRole("main"));
+  expect(main.getByLabelText("Paste your CV text")).toHaveValue("My TypeScript CV");
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(main.getByRole("button", { name: "Working…" })).toBeDisabled();
+  await main.findByRole("heading", { name: "Comparison results" });
+  expect(writes).toEqual(["POST /jobs", "PUT /cv", "POST /jobs/73/compare"]);
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(await screen.findByRole("button", { name: "View job: Engineer at Example Company" })).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "My CV" }));
+  fireEvent.click(await screen.findByRole("button", { name: "View current CV" }));
+  expect(screen.getByRole("region", { name: "Saved CV text" })).toHaveTextContent("My TypeScript CV");
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  expect(await screen.findByRole("list", { name: "Saved comparisons" })).toHaveTextContent("Engineer");
+});
+
+test("empty Dashboard reuses its saved job after upload and comparison failures", async () => {
+  const { writes } = mockEmptyDashboard({ failUpload: true, failCompare: true });
+  const main = await openEmptyDashboard();
+  fillEmptyJob(main);
+  const file = new File(["cv"], "cv.pdf", { type: "application/pdf" });
+  fireEvent.change(main.getByLabelText("Choose a file"), { target: { files: [file] } });
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(await main.findByRole("alert")).toHaveTextContent("Your job is saved, but your CV could not be saved.");
+  expect(main.getByLabelText("Job title")).toHaveValue("Engineer");
+  expect(main.getByText("Selected: cv.pdf")).toBeVisible();
+  expect(writes).toEqual(["POST /jobs", "POST /cv/upload"]);
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  await waitFor(() => expect(main.getByRole("alert")).toHaveTextContent("Your job and CV are saved, but the comparison failed."));
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  await main.findByRole("heading", { name: "Comparison results" });
+  expect(writes).toEqual(["POST /jobs", "POST /cv/upload", "POST /cv/upload",
+    "POST /jobs/73/compare", "POST /jobs/73/compare"]);
+});
 
 function savedDraftResponse(url: string) {
   if (url.endsWith("/comparisons")) {
@@ -737,8 +867,11 @@ test("disables Compare while a comparison request is running", async () => {
 });
 
 test("shows comparison API errors without retrying or saving another draft", async () => {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url.endsWith("/jobs") && init?.method === "GET") {
+      return Promise.resolve({ ok: true, json: async () => [] });
+    }
     if (url.endsWith("/jobs/7/compare")) {
       return Promise.resolve({
         ok: false,
@@ -754,8 +887,8 @@ test("shows comparison API errors without retrying or saving another draft", asy
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Comparison unavailable: AI comparisons are disabled",
   );
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/cv"))).toHaveLength(1);
-  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/jobs"))).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/cv") && init?.method === "PUT")).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith("/jobs") && init?.method === "POST")).toHaveLength(1);
 });
 
 test("loads Jobs in API order and retries errors including expired auth", async () => {
@@ -781,9 +914,11 @@ test("loads Jobs in API order and retries errors including expired auth", async 
     if (String(input).endsWith("/jobs") && init?.method === "GET") {
       expect(init.headers).toEqual({ Authorization: "Bearer token" });
       attempts += 1;
-      return Promise.resolve(attempts === 1
+      // The first read belongs to the Dashboard overview.
+      if (attempts === 1) return Promise.resolve({ ok: true, json: async () => [] });
+      return Promise.resolve(attempts === 2
         ? { ok: false, json: async () => ({ detail: "Invalid or expired token" }) }
-        : { ok: true, json: async () => attempts === 2 ? jobs : [] });
+        : { ok: true, json: async () => attempts === 3 ? jobs : [] });
     }
     return Promise.resolve(savedDraftResponse(String(input)));
   });
@@ -823,7 +958,7 @@ test("loads Jobs in API order and retries errors including expired auth", async 
     .map((node) => node.textContent))
     .toEqual([...list.querySelectorAll(".saved-job-summary")]
       .map((node) => node.textContent));
-  expect(attempts).toBe(2);
+  expect(attempts).toBe(3);
   expect(screen.getByRole("button", { name: "Jobs" }))
     .toHaveAttribute("aria-current", "page");
   fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));

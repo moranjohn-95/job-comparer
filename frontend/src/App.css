@@ -117,6 +117,37 @@
   gap: var(--space-5);
   margin-bottom: var(--space-6);
 }
+.starter-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.empty-dashboard[hidden] {
+  display: none;
+}
+.empty-dashboard .cv-starter {
+  margin-top: var(--space-5);
+}
+.empty-dashboard .starter-fields + .starter-fields {
+  margin-top: var(--space-5);
+}
+.empty-dashboard .starter-fields legend {
+  margin-bottom: var(--space-3);
+  font-size: 1rem;
+  font-weight: 700;
+}
+.empty-dashboard .cv-starter__actions {
+  align-items: center;
+  justify-content: space-between;
+}
+.empty-dashboard .cv-starter__actions h3 {
+  margin: 0;
+}
+.empty-dashboard .cv-save:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
 .dashboard-start {
   display: grid;
   gap: var(--space-3);
@@ -162,6 +193,76 @@
 }
 .dashboard-start .saved-cv-preview {
   padding: var(--space-4);
+}
+.dashboard-job-picker,
+.dashboard-job-form {
+  display: grid;
+  gap: var(--space-3);
+}
+.dashboard-job-picker {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+.dashboard-job-picker select {
+  width: 100%;
+  min-height: 40px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+.dashboard-job-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.dashboard-job-summary div {
+  display: grid;
+  gap: var(--space-1);
+}
+.dashboard-job-summary span {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.dashboard-job-form .job-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.dashboard-job-form .job-details > div {
+  display: grid;
+  gap: var(--space-2);
+}
+.dashboard-job-form label {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: 700;
+}
+.dashboard-job-form input,
+.dashboard-job-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+}
+.dashboard-job-form textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+.dashboard-job-form input:focus,
+.dashboard-job-form textarea:focus,
+.dashboard-job-picker select:focus {
+  border-color: var(--color-accent);
+  outline: 3px solid var(--color-accent-soft);
 }
 .dashboard-cards {
   display: grid;
@@ -246,6 +347,9 @@
   }
   .dashboard-cv-actions {
     justify-content: flex-start;
+  }
+  .dashboard-job-form .job-details {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 .jobs-page .job-primary {
