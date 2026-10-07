@@ -604,6 +604,63 @@
   margin-top: 0;
   border-radius: 4px;
 }
+.saved-cv-tabs {
+  display: flex;
+  gap: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.saved-cv-tabs button {
+  padding: var(--space-3) var(--space-4);
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 4px 4px 0 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.saved-cv-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-deep);
+}
+.saved-cv-form button:focus-visible {
+  outline: 2px solid var(--color-accent-deep);
+  outline-offset: 3px;
+}
+.saved-cv-form button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.saved-cv-form .cv-dropzone,
+.saved-cv-form .cv-picker {
+  border-radius: 4px;
+}
+.saved-cv-form .cv-dropzone {
+  background: var(--color-accent-soft);
+  background-clip: padding-box;
+}
+.saved-cv-form .cv-dropzone:hover,
+.saved-cv-form .cv-dropzone:focus-within {
+  border-color: var(--color-accent-deep);
+}
+.saved-cv-file {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.saved-cv-file p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.saved-cv-text:not([hidden]) {
+  display: grid;
+  gap: var(--space-3);
+}
 .account-email {
   overflow: hidden;
   margin: auto var(--space-3) var(--space-3);

@@ -88,6 +88,19 @@ type DraftProps = {
 
 const MAX_CV_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_CV_TEXT_LENGTH = 50_000;
+const CV_FILE_ACCEPT = ".pdf,.docx,application/pdf,"
+  + "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+
+function cvFileError(file: File): string | null {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension !== "pdf" && extension !== "docx") {
+    return "Choose a PDF or DOCX file.";
+  }
+  if (file.size > MAX_CV_FILE_BYTES) return "Choose a file no larger than 5 MB.";
+  if (file.size === 0) return "Choose a file that is not empty.";
+  return null;
+}
+
 const MAX_JOB_TITLE_LENGTH = 200;
 const MAX_JOB_COMPANY_LENGTH = 200;
 const MAX_JOB_DESCRIPTION_LENGTH = 20_000;
@@ -321,19 +334,9 @@ function StartWithCV({
   const [fileError, setFileError] = useState<string | null>(null);
   function selectFile(file: File | undefined) {
     if (!file) return;
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    if (extension !== "pdf" && extension !== "docx") {
-      onFileChange(null);
-      setFileError("Choose a PDF or DOCX file.");
-      return;
-    }
-    if (file.size > MAX_CV_FILE_BYTES) {
-      onFileChange(null);
-      setFileError("Choose a file smaller than 5 MB.");
-      return;
-    }
-    onFileChange(file);
-    setFileError(null);
+    const error = cvFileError(file);
+    onFileChange(error ? null : file);
+    setFileError(error);
   }
   function handleFileChange(event: ChangeEvent<HTMLInputElement>) {
     selectFile(event.target.files?.[0]);
@@ -360,7 +363,7 @@ function StartWithCV({
               id="cv-file"
               className="visually-hidden"
               type="file"
-              accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept={CV_FILE_ACCEPT}
               onChange={handleFileChange}
             />
             <p>Drag and drop your CV here</p>
@@ -1068,34 +1071,49 @@ function MyCvView({ token, visible, onSaved }: {
   const [attempt, setAttempt] = useState(0);
   const [preview, setPreview] = useState(false);
   const [draft, setDraft] = useState("");
+  const [inputMethod, setInputMethod] = useState<"file" | "text">("file");
+  const [file, setFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const saveRequest = useRef<AbortController | null>(null);
+  // Match the backend's Unicode code-point limit, not UTF-16 code units.
+  const textTooLong = [...draft].length > MAX_CV_TEXT_LENGTH;
+  const inputValid = inputMethod === "file"
+    ? file !== null && !fileError : Boolean(draft.trim()) && !textTooLong;
 
   useEffect(() => () => { saveRequest.current?.abort(); }, []);
 
-  async function save() {
-    if (saveRequest.current || loading || error) return;
+  function selectFiles(files: FileList) {
+    if (saving || files.length === 0) return;
+    const error = files.length !== 1
+      ? "Choose one PDF or DOCX file." : cvFileError(files[0]);
+    setFile(error ? null : files[0]);
+    setFileError(error);
+    setSaveError(null);
     setSaved(false);
-    if (!draft.trim()) {
-      setSaveError("Enter your CV text before saving.");
-      return;
-    }
-    // Python's limit counts Unicode code points, not UTF-16 code units.
-    if ([...draft].length > MAX_CV_TEXT_LENGTH) {
-      setSaveError("CV text must be 50,000 characters or fewer.");
-      return;
-    }
+  }
+
+  async function save() {
+    if (saveRequest.current || loading || error || !inputValid) return;
+    setSaved(false);
     const controller = new AbortController();
     saveRequest.current = controller;
     setSaving(true);
     setSaveError(null);
     try {
-      await saveCvText(token, draft, controller.signal);
+      let savedText = draft;
+      if (inputMethod === "file" && file) {
+        savedText = await uploadCv(token, file, controller.signal);
+      } else {
+        await saveCvText(token, draft, controller.signal);
+      }
       if (controller.signal.aborted) return;
-      setText(draft);
-      setDraft("");
+      setText(savedText);
+      if (inputMethod === "file") setFile(null);
+      else setDraft("");
       setSaved(true);
       onSaved();
     } catch (caught) {
@@ -1193,25 +1211,123 @@ function MyCvView({ token, visible, onSaved }: {
         </section>
       )}
       {!preview && !loading && !error && (
-        <section className="cv-paste saved-cv-form" aria-label="Save CV text">
-          <label htmlFor="saved-cv-draft">CV text</label>
-          <p id="saved-cv-help">
-            Paste your CV text (up to 50,000 characters).
-            {text !== null && " Your current CV will be replaced when you save."}
-          </p>
-          <textarea
-            id="saved-cv-draft"
-            aria-describedby="saved-cv-help"
-            aria-invalid={Boolean(saveError)}
-            value={draft}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setSaveError(null);
-              setSaved(false);
-            }}
-            disabled={saving}
-            required
-          />
+        <section className="cv-paste saved-cv-form" aria-label="Save CV">
+          <div className="saved-cv-tabs" role="tablist" aria-label="CV input">
+            {(["file", "text"] as const).map((method) => (
+              <button
+                key={method}
+                type="button"
+                role="tab"
+                id={`saved-cv-tab-${method}`}
+                aria-controls={`saved-cv-panel-${method}`}
+                aria-selected={inputMethod === method}
+                tabIndex={inputMethod === method ? 0 : -1}
+                disabled={saving}
+                onClick={() => setInputMethod(method)}
+                onKeyDown={(event) => {
+                  if (!["ArrowLeft", "ArrowRight", "Home", "End"]
+                    .includes(event.key)) return;
+                  event.preventDefault();
+                  const next = event.key === "Home" ? "file"
+                    : event.key === "End" ? "text"
+                    : method === "file" ? "text" : "file";
+                  setInputMethod(next);
+                  document.getElementById(`saved-cv-tab-${next}`)?.focus();
+                }}
+              >
+                {method === "file" ? "Upload file" : "Paste text"}
+              </button>
+            ))}
+          </div>
+          <div
+            id="saved-cv-panel-file"
+            role="tabpanel"
+            aria-labelledby="saved-cv-tab-file"
+            hidden={inputMethod !== "file"}
+          >
+            <div
+              className="cv-dropzone"
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = saving ? "none" : "copy";
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                selectFiles(event.dataTransfer.files);
+              }}
+            >
+              <Icon name="document" />
+              <p>Drag and drop your CV here</p>
+              <span>One PDF or DOCX, up to 5 MB</span>
+              <input
+                ref={fileInput}
+                type="file"
+                accept={CV_FILE_ACCEPT}
+                hidden
+                disabled={saving}
+                onChange={(event) => {
+                  if (event.target.files) selectFiles(event.target.files);
+                  event.target.value = "";
+                }}
+              />
+              <button
+                type="button"
+                className="cv-picker"
+                disabled={saving}
+                onClick={() => fileInput.current?.click()}
+              >
+                {file ? "Change file" : "Choose file"}
+              </button>
+            </div>
+            {file && (
+              <div className="saved-cv-file">
+                <p role="status">Selected: {file.name}</p>
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={saving}
+                  onClick={() => {
+                    setFile(null);
+                    setSaveError(null);
+                  }}
+                >
+                  Clear file
+                </button>
+              </div>
+            )}
+            {fileError && <p className="cv-file-error" role="alert">{fileError}</p>}
+          </div>
+          <div
+            id="saved-cv-panel-text"
+            className="saved-cv-text"
+            role="tabpanel"
+            aria-labelledby="saved-cv-tab-text"
+            hidden={inputMethod !== "text"}
+          >
+            <label htmlFor="saved-cv-draft">CV text</label>
+            <p id="saved-cv-help">Paste your CV text (up to 50,000 characters).</p>
+            <textarea
+              id="saved-cv-draft"
+              aria-describedby="saved-cv-help"
+              aria-invalid={textTooLong}
+              value={draft}
+              onChange={(event) => {
+                setDraft(event.target.value);
+                setSaveError(null);
+                setSaved(false);
+              }}
+              disabled={saving}
+              required
+            />
+            {textTooLong && (
+              <p className="form-error" role="alert">
+                CV text must be 50,000 characters or fewer.
+              </p>
+            )}
+          </div>
+          {text !== null && (
+            <p>Your current CV will be replaced when you save.</p>
+          )}
           {saveError && <p className="form-error" role="alert">{saveError}</p>}
           {(saving || saved) && (
             <p role="status">{saving ? "Saving your CV…" : "CV saved."}</p>
@@ -1219,7 +1335,7 @@ function MyCvView({ token, visible, onSaved }: {
           <button
             type="button"
             className="cv-save job-primary"
-            disabled={saving}
+            disabled={saving || !inputValid}
             onClick={() => void save()}
           >
             {saving ? "Saving…" : text === null ? "Save CV" : "Save replacement"}

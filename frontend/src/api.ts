@@ -105,15 +105,28 @@ export async function saveCvText(
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
 }
 
-export async function uploadCv(token: string, file: File): Promise<void> {
+export async function uploadCv(
+  token: string, file: File, signal?: AbortSignal,
+): Promise<string> {
   const form = new FormData()
   form.append('file', file)
   const response = await fetch(`${API_URL}/cv/upload`, {
     method: 'POST',
     headers: authorization(token),
     body: form,
+    signal,
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const body: unknown = await response.json()
+  if (
+    typeof body !== 'object' || body === null ||
+    !('text' in body) || typeof body.text !== 'string'
+  ) {
+    throw new ApiError(
+      'The upload response was invalid. Reload My CV to check the saved text.',
+    )
+  }
+  return body.text
 }
 
 export async function createJob(
