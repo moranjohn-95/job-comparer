@@ -69,6 +69,7 @@ app.add_middleware(
     allow_origins=["http://127.0.0.1:5173"],
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["X-Comparison-Id"],
 )
 bearer = HTTPBearer(auto_error=False)
 MAX_CV_LENGTH = 50_000
@@ -462,6 +463,7 @@ def view_job(
 @app.post("/jobs/{job_id}/compare", response_model=ComparisonResult)
 def compare_job(
     job_id: int,
+    response: Response,
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> ComparisonResult:
@@ -508,15 +510,16 @@ def compare_job(
             detail="AI provider returned an invalid comparison",
         ) from None
 
-    session.add(
-        ComparisonHistory(
-            user_id=user_id,
-            job_id=job_id,
-            cv_revision=cv_revision,
-            result=result.model_dump(mode="json"),
-        )
+    entry = ComparisonHistory(
+        user_id=user_id,
+        job_id=job_id,
+        cv_revision=cv_revision,
+        result=result.model_dump(mode="json"),
     )
+    session.add(entry)
     try:
+        session.flush()
+        comparison_id = entry.id
         session.commit()
     except IntegrityError:
         session.rollback()
@@ -524,6 +527,7 @@ def compare_job(
             status_code=409,
             detail="Saved job or account changed during comparison",
         ) from None
+    response.headers["X-Comparison-Id"] = str(comparison_id)
     return result
 
 

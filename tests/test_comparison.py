@@ -871,14 +871,25 @@ def test_successful_result_persists_as_private_history(
     job_id = prepare(client, headers)
     calls = mock_success(monkeypatch)
 
-    comparison = client.post(f"/jobs/{job_id}/compare", headers=headers)
+    comparison = client.post(
+        f"/jobs/{job_id}/compare",
+        headers={**headers, "Origin": "http://127.0.0.1:5173"},
+    )
 
     assert comparison.status_code == 200
+    comparison_id = int(comparison.headers["X-Comparison-Id"])
+    assert "x-comparison-id" in {
+        value.strip().lower()
+        for value in comparison.headers[
+            "Access-Control-Expose-Headers"
+        ].split(",")
+    }
     legacy_result = comparison.json()
     legacy_result.pop("needs_review")
     legacy_result["interpretation"] = "Original historical interpretation."
     with Session(get_engine()) as session:
         entry = session.query(ComparisonHistory).filter_by(job_id=job_id).one()
+        assert entry.id == comparison_id
         assert entry.result == comparison.json()
         entry.result = legacy_result
         session.commit()
@@ -889,6 +900,7 @@ def test_successful_result_persists_as_private_history(
     assert history.status_code == 200
     assert len(history.json()) == 1
     saved = history.json()[0]
+    assert saved["id"] == comparison_id
     assert saved["job_id"] == job_id
     assert saved["cv_outdated"] is False
     assert saved["result"] == {**legacy_result, "needs_review": []}

@@ -223,14 +223,17 @@ export async function getJob(
 export async function compareJob(
   token: string,
   jobId: number,
-): Promise<ComparisonResult> {
+): Promise<{ result: ComparisonResult; comparisonId: number | null }> {
   const response = await fetch(`${API_URL}/jobs/${jobId}/compare`, {
     method: 'POST',
     headers: authorization(token),
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
   const body: unknown = await response.json()
-  return parseComparisonResult(body)
+  const savedId = response.headers?.get('X-Comparison-Id')
+  const comparisonId = savedId && /^[1-9]\d*$/.test(savedId)
+    && Number.isSafeInteger(Number(savedId)) ? Number(savedId) : null
+  return { result: parseComparisonResult(body), comparisonId }
 }
 
 function parseComparisonResult(body: unknown): ComparisonResult {

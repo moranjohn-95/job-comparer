@@ -590,11 +590,17 @@ const comparisonResult = {
     "A possible gap means evidence was not found in the saved CV; it does not establish that the person lacks the skill.",
 };
 
-function mockEmptyDashboard(options: { failUpload?: boolean; failCompare?: boolean } = {}) {
+function mockEmptyDashboard(options: {
+  failUpload?: boolean;
+  failCompare?: boolean;
+  initialCv?: string;
+  initialJobs?: Array<{ id: number; title: string; company_name: string }>;
+  newerHistoryEntry?: boolean;
+} = {}) {
   const job = { id: 73, title: "Engineer", company_name: "Example Company" };
-  let cv: string | null = null;
-  let jobSaved = false;
-  let compared = false;
+  let cv: string | null = options.initialCv ?? null;
+  let jobs = options.initialJobs ?? [];
+  let comparedJob: typeof job | null = null;
   const writes: string[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = new URL(String(input)).pathname;
@@ -609,10 +615,10 @@ function mockEmptyDashboard(options: { failUpload?: boolean; failCompare?: boole
     if (path === "/jobs" && method === "POST") {
       expect(JSON.parse(String(init?.body))).toEqual({ title: job.title,
         company_name: job.company_name, description: "Build software." });
-      jobSaved = true;
+      jobs = [job, ...jobs];
       return ok(job);
     }
-    if (path === "/jobs") return ok(jobSaved ? [job] : []);
+    if (path === "/jobs") return ok(jobs);
     if (path === "/cv" && method === "PUT") {
       cv = JSON.parse(String(init?.body)).text;
       return ok({ text: cv });
@@ -629,22 +635,33 @@ function mockEmptyDashboard(options: { failUpload?: boolean; failCompare?: boole
     if (path === "/cv") return cv === null
       ? { ok: false, status: 404, json: async () => ({ detail: "CV not found" }) }
       : ok({ text: cv });
-    if (path === "/jobs/73/compare") {
-      expect(jobSaved && cv !== null).toBe(true);
+    const compareMatch = path.match(/^\/jobs\/(\d+)\/compare$/);
+    if (compareMatch) {
+      const selectedJob = jobs.find((entry) => entry.id === Number(compareMatch[1]));
+      expect(selectedJob && cv !== null).toBeTruthy();
       if (options.failCompare) {
         options.failCompare = false;
         return fail("AI provider is unavailable");
       }
-      compared = true;
-      return ok(comparisonResult);
+      comparedJob = selectedJob!;
+      return { ...ok(comparisonResult), headers: new Headers({ "X-Comparison-Id": "91" }) };
     }
-    const entry = { id: 91, job_id: 73, created_at: "2026-10-07T12:00:00Z",
+    const entry = { id: 91, job_id: comparedJob?.id, created_at: "2026-10-07T12:00:00Z",
       cv_outdated: false, result: comparisonResult };
-    if (path === "/jobs/73/comparisons") return ok(compared ? [entry] : []);
-    if (path === "/comparisons") return ok(compared ? [{ ...entry,
-      job_title: job.title, company_name: job.company_name,
-      matched_requirements_count: 1, possible_gaps_count: 1, needs_review_count: 0,
-    }] : []);
+    if (path === `/jobs/${comparedJob?.id}/comparisons/91`) return ok(entry);
+    const historyMatch = path.match(/^\/jobs\/(\d+)\/comparisons$/);
+    if (historyMatch) return ok(comparedJob?.id === Number(historyMatch[1]) ? [entry] : []);
+    if (path === "/comparisons") {
+      if (!comparedJob) return ok([]);
+      const summary = { ...entry,
+        job_title: comparedJob.title, company_name: comparedJob.company_name,
+        matched_requirements_count: 1, possible_gaps_count: 1, needs_review_count: 0,
+      };
+      // Another save may finish later; navigation must still use the response ID.
+      return ok(options.newerHistoryEntry
+        ? [{ ...summary, id: 92, created_at: "2026-10-07T12:01:00Z" }, summary]
+        : [summary]);
+    }
     throw new Error(`Unexpected request: ${method} ${path}`);
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -655,7 +672,7 @@ async function openEmptyDashboard() {
   render(<App />);
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
-  await screen.findByRole("group", { name: "1. Job details" });
+  await screen.findByRole("heading", { name: "Start a comparison" });
   return within(screen.getByRole("main"));
 }
 
@@ -665,10 +682,10 @@ function fillEmptyJob(main: ReturnType<typeof within>) {
   fireEvent.change(main.getByLabelText("Job description"), { target: { value: "Build software." } });
 }
 
-test("empty Dashboard saves job and pasted CV before comparing and refreshes sidebar screens", async () => {
-  const { writes } = mockEmptyDashboard();
+test("empty Dashboard opens the exact saved comparison and refreshes sidebar screens", async () => {
+  const { writes, fetchMock } = mockEmptyDashboard({ newerHistoryEntry: true });
   let main = await openEmptyDashboard();
-  expect(main.queryByRole("button", { name: /Save/ })).not.toBeInTheDocument();
+  expect(main.queryByRole("button", { name: /^Save(?: |$)/ })).not.toBeInTheDocument();
   fireEvent.click(main.getByRole("button", { name: "Compare" }));
   expect(main.getByRole("alert")).toHaveTextContent("Enter a job title");
   expect(writes).toEqual([]);
@@ -686,7 +703,19 @@ test("empty Dashboard saves job and pasted CV before comparing and refreshes sid
   expect(main.getByLabelText("Paste your CV text")).toHaveValue("My TypeScript CV");
   fireEvent.click(main.getByRole("button", { name: "Compare" }));
   expect(main.getByRole("button", { name: "Working…" })).toBeDisabled();
-  await main.findByRole("heading", { name: "Comparison results" });
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(await screen.findByRole("button", { name: "TypeScript" })).toBeVisible();
+  expect(fetchMock).toHaveBeenCalledWith(
+    "http://127.0.0.1:8001/jobs/73/comparisons/91",
+    expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer token" } }),
+  );
+  expect(screen.getByRole("button", { name: "Comparisons" })).toHaveAttribute("aria-current", "page");
+  expect(writes).toEqual(["POST /jobs", "PUT /cv", "POST /jobs/73/compare"]);
+  fireEvent.click(screen.getByRole("button", { name: "Back to Dashboard" }));
+  expect(await screen.findByRole("heading", { name: "Start a comparison" })).toBeVisible();
+  expect(screen.queryByRole("region", { name: "Requirement details" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Dashboard" })).toHaveAttribute("aria-current", "page");
+  expect(screen.getByRole("region", { name: "Recent comparisons" })).toHaveTextContent("Engineer");
   expect(writes).toEqual(["POST /jobs", "PUT /cv", "POST /jobs/73/compare"]);
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
   expect(await screen.findByRole("button", { name: "View job: Engineer at Example Company" })).toBeVisible();
@@ -705,15 +734,100 @@ test("empty Dashboard reuses its saved job after upload and comparison failures"
   fireEvent.change(main.getByLabelText("Choose a file"), { target: { files: [file] } });
   fireEvent.click(main.getByRole("button", { name: "Compare" }));
   expect(await main.findByRole("alert")).toHaveTextContent("Your job is saved, but your CV could not be saved.");
-  expect(main.getByLabelText("Job title")).toHaveValue("Engineer");
+  expect(main.getByRole("group", { name: "Job details" })).toHaveTextContent("Engineer");
+  expect(main.getByRole("group", { name: "Job details" })).toHaveTextContent("Example Company");
   expect(main.getByText("Selected: cv.pdf")).toBeVisible();
   expect(writes).toEqual(["POST /jobs", "POST /cv/upload"]);
   fireEvent.click(main.getByRole("button", { name: "Compare" }));
   await waitFor(() => expect(main.getByRole("alert")).toHaveTextContent("Your job and CV are saved, but the comparison failed."));
+  await waitFor(() => expect(main.getByRole("button", { name: "Compare" })).toBeEnabled());
   fireEvent.click(main.getByRole("button", { name: "Compare" }));
-  await main.findByRole("heading", { name: "Comparison results" });
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
   expect(writes).toEqual(["POST /jobs", "POST /cv/upload", "POST /cv/upload",
     "POST /jobs/73/compare", "POST /jobs/73/compare"]);
+});
+
+test("returning Dashboard explicitly selects a saved job by ID and reuses the saved CV", async () => {
+  const { writes } = mockEmptyDashboard({
+    initialCv: "My saved CV",
+    initialJobs: [
+      { id: 74, title: "Engineer", company_name: "Another Company" },
+      { id: 73, title: "Engineer", company_name: "Example Company" },
+    ],
+  });
+  const main = await openEmptyDashboard();
+  const jobPicker = main.getByRole("combobox", { name: "Use saved job" });
+  expect(jobPicker).toHaveValue("");
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  expect(writes).toEqual([]);
+  fireEvent.change(jobPicker, { target: { value: "73" } });
+  expect(jobPicker).toHaveValue("73");
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  expect(main.queryByLabelText("Job description")).not.toBeInTheDocument();
+  expect(main.queryByLabelText("Paste your CV text")).not.toBeInTheDocument();
+
+  fireEvent.click(main.getByRole("button", { name: "Add new job" }));
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fillEmptyJob(main);
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  fireEvent.click(main.getByRole("button", { name: "Use saved job" }));
+  expect(main.getByRole("combobox", { name: "Use saved job" })).toHaveValue("73");
+  expect(main.queryByLabelText("Job description")).not.toBeInTheDocument();
+  fireEvent.click(main.getByRole("button", { name: "Add new job" }));
+  expect(main.getByLabelText("Job title")).toHaveValue("Engineer");
+  expect(main.getByLabelText("Company name")).toHaveValue("Example Company");
+  expect(main.getByLabelText("Job description")).toHaveValue("Build software.");
+  fireEvent.click(main.getByRole("button", { name: "Use saved job" }));
+
+  fireEvent.click(main.getByRole("button", { name: "Replace CV" }));
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.change(main.getByLabelText("Paste your CV text"), {
+    target: { value: "Unsubmitted replacement CV" },
+  });
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByText("You have no saved comparisons yet.");
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  expect(main.getByRole("combobox", { name: "Use saved job" })).toHaveValue("73");
+  expect(main.getByLabelText("Paste your CV text")).toHaveValue("Unsubmitted replacement CV");
+  fireEvent.click(main.getByRole("button", { name: "Cancel replacement" }));
+  expect(main.queryByLabelText("Paste your CV text")).not.toBeInTheDocument();
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  expect(writes).toEqual([]);
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(writes).toEqual(["POST /jobs/73/compare"]);
+});
+
+test("Dashboard with only a saved CV adds a job without saving the CV again", async () => {
+  const { writes } = mockEmptyDashboard({ initialCv: "My saved CV" });
+  const main = await openEmptyDashboard();
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fillEmptyJob(main);
+  expect(main.queryByLabelText("Paste your CV text")).not.toBeInTheDocument();
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(writes).toEqual(["POST /jobs", "POST /jobs/73/compare"]);
+});
+
+test("Dashboard with only saved jobs accepts a CV and reuses the explicitly selected job", async () => {
+  const { writes } = mockEmptyDashboard({ initialJobs: [
+    { id: 73, title: "Engineer", company_name: "Example Company" },
+  ] });
+  const main = await openEmptyDashboard();
+  const jobPicker = main.getByRole("combobox", { name: "Use saved job" });
+  expect(jobPicker).toHaveValue("");
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.change(jobPicker, { target: { value: "73" } });
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.change(main.getByLabelText("Paste your CV text"), {
+    target: { value: "My TypeScript CV" },
+  });
+  expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(writes).toEqual(["PUT /cv", "POST /jobs/73/compare"]);
 });
 
 function savedDraftResponse(url: string) {
@@ -751,16 +865,27 @@ async function saveTextDraftAndLogIn() {
 
 test("shows evidence-based comparison results only after Compare is clicked", async () => {
   let comparisonCount = 0;
+  const job = { id: 7, title: "Software Engineer", company_name: "Analytical Engines" };
   const needsReview = {
     requirement: "Emergency response certification",
     reason: "The listed training does not establish the required certification.",
     job_evidence: "Emergency response certification required.",
     cv_evidence: "Completed workplace safety training.",
   };
+  const savedResults = new Map<number, typeof comparisonResult & {
+    needs_review: typeof needsReview[];
+  }>();
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/jobs") && init?.method === "GET") {
-      return Promise.resolve({ ok: true, json: async () => [] });
+      return Promise.resolve({ ok: true, json: async () => [job] });
+    }
+    const savedId = url.match(/\/jobs\/7\/comparisons\/(\d+)$/)?.[1];
+    if (savedId) {
+      return Promise.resolve({ ok: true, json: async () => ({
+        id: Number(savedId), job_id: job.id, created_at: "2026-10-07T12:00:00Z",
+        cv_outdated: false, result: savedResults.get(Number(savedId)),
+      }) });
     }
     if (url.endsWith("/jobs/7/compare")) {
       comparisonCount += 1;
@@ -768,29 +893,28 @@ test("shows evidence-based comparison results only after Compare is clicked", as
         method: "POST",
         headers: { Authorization: "Bearer token" },
       });
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({
-          ...comparisonResult,
-          matched_requirements: comparisonCount === 1
-            ? comparisonResult.matched_requirements
-            : [],
-          possible_gaps: comparisonCount < 3
-            ? comparisonResult.possible_gaps
-            : [],
-          needs_review: [needsReview],
-        }),
-      });
+      const result = {
+        ...comparisonResult,
+        matched_requirements: comparisonCount === 1
+          ? comparisonResult.matched_requirements : [],
+        possible_gaps: comparisonCount < 3 ? comparisonResult.possible_gaps : [],
+        needs_review: [needsReview],
+      };
+      const id = 100 + comparisonCount;
+      savedResults.set(id, result);
+      return Promise.resolve({ ok: true,
+        headers: new Headers({ "X-Comparison-Id": String(id) }),
+        json: async () => result });
     }
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<App />);
   await saveTextDraftAndLogIn();
-  expect(screen.queryByText("Comparison results")).not.toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Saved comparison" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Compare" }));
-  expect(await screen.findByText("Comparison results")).toBeVisible();
-  expect(screen.getByText("Built TypeScript web applications."))
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(await screen.findByText("Built TypeScript web applications."))
     .toBeVisible();
   const matchRow = screen.getByRole("button", { name: "TypeScript" });
   expect(matchRow).toHaveAttribute("aria-pressed", "true");
@@ -814,17 +938,19 @@ test("shows evidence-based comparison results only after Compare is clicked", as
     .toHaveLength(1);
 
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
-  expect(await screen.findByText("You have no saved jobs yet."))
+  expect(await screen.findByRole("button", { name: "View job: Software Engineer at Analytical Engines" }))
     .toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
-  expect(screen.getByText(needsReview.reason)).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "Start a comparison" })).toBeVisible();
+  expect(screen.queryByText(needsReview.reason)).not.toBeInTheDocument();
   expect(comparisonCount).toBe(1);
 
-  fireEvent.click(screen.getByRole("button", { name: "Compare again" }));
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
   expect(await screen.findByRole("button", {
     name: "Kubernetes", pressed: true,
   })).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Compare again" }));
+  fireEvent.click(screen.getByRole("button", { name: "Back to Dashboard" }));
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
   expect(await screen.findByRole("button", {
     name: needsReview.requirement, pressed: true,
   })).toBeVisible();
@@ -832,12 +958,19 @@ test("shows evidence-based comparison results only after Compare is clicked", as
 
 test("disables Compare while a comparison request is running", async () => {
   let resolveComparison: ((value: Response) => void) | undefined;
+  const result = { ...comparisonResult, matched_requirements: [], possible_gaps: [] };
   const comparisonRequest = new Promise<Response>((resolve) => {
     resolveComparison = resolve;
   });
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/jobs/7/compare")) return comparisonRequest;
+    if (url.endsWith("/jobs/7/comparisons/91")) {
+      return Promise.resolve({ ok: true, json: async () => ({
+        id: 91, job_id: 7, created_at: "2026-10-07T12:00:00Z", cv_outdated: false,
+        result,
+      }) });
+    }
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -851,14 +984,11 @@ test("disables Compare while a comparison request is running", async () => {
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("compare"))).toHaveLength(1);
   resolveComparison?.({
     ok: true,
-    json: async () => ({
-      ...comparisonResult,
-      matched_requirements: [],
-      possible_gaps: [],
-    }),
+    headers: new Headers({ "X-Comparison-Id": "91" }),
+    json: async () => result,
   } as Response);
-  expect(await screen.findByText("Comparison results")).toBeVisible();
-  expect(screen.getByText("No matched requirements were returned."))
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(await screen.findByText("No matched requirements were returned."))
     .toBeVisible();
   expect(screen.getByText("No possible gaps were returned.")).toBeVisible();
   expect(screen.queryByRole("heading", { name: /Needs review/ }))
@@ -970,7 +1100,7 @@ test("loads Jobs in API order and retries errors including expired auth", async 
   )).toBe(true);
 });
 
-test("discards a pending Jobs response after logout and another login", async () => {
+test("discards the homepage handoff and pending Jobs response after another login", async () => {
   let resolveJobs!: (response: unknown) => void;
   let jobsSignal: AbortSignal | undefined;
   let account = 0;
@@ -999,15 +1129,17 @@ test("discards a pending Jobs response after logout and another login", async ()
   });
   vi.stubGlobal("fetch", fetchMock);
   render(<App />);
-  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
-  enterLogin();
-  await screen.findByRole("heading", { name: "Dashboard" });
+  await saveTextDraftAndLogIn();
+  await waitFor(() => expect(jobsSignal).toBeDefined());
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
   fireEvent.click(screen.getByRole("button", { name: "Log out" }));
   expect(jobsSignal?.aborted).toBe(true);
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
   await screen.findByRole("heading", { name: "Dashboard" });
+  expect(await screen.findByRole("heading", { name: "Start a comparison" })).toBeVisible();
+  expect(screen.queryByText("Job saved")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Job title")).toHaveValue("");
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
   resolveJobs({ ok: true, json: async () => [
     { id: 1, title: "Previous account job", company_name: "Previous company" },
