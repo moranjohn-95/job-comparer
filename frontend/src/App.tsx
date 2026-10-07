@@ -1075,58 +1075,102 @@ function ComparisonsView({ token }: { token: string }) {
     />
   );
   return (
-    <main className="main-content jobs-page jobs-list-page">
-      <div className="jobs-heading"><h1>Comparisons</h1></div>
-      {loading ? (
-        <p role="status">Loading saved comparisons…</p>
-      ) : error ? (
-        <div className="jobs-message">
-          <p role="alert">Could not load saved comparisons: {error}</p>
-          <button
-            type="button"
-            className="text-button"
-            onClick={() => {
-              setError(null);
-              setLoading(true);
-              setAttempt((value) => value + 1);
-            }}
-          >
-            Retry
-          </button>
+    <main
+      className="main-content jobs-page jobs-list-page comparison-history-page"
+    >
+      <div className="jobs-heading">
+        <h1>Comparisons</h1>
+        <p className="history-order">Newest first</p>
+      </div>
+      <div className="jobs-table">
+        <div className="jobs-table-header" aria-hidden="true">
+          <span>Job</span>
+          <span>Compared</span>
+          <span>Results</span>
+          <span>Action</span>
         </div>
-      ) : entries.length === 0 ? (
-        <p className="jobs-message">You have no saved comparisons yet.</p>
-      ) : (
-        <ul className="saved-jobs-list" aria-label="Saved comparisons">
-          {entries.map((entry) => (
-            <li key={entry.id} className="saved-job-row">
-              <div className="saved-job-summary">
-                <h2>{entry.job_title}</h2>
-                <p>{entry.company_name}</p>
-                <p>
-                  <time dateTime={entry.created_at}>
-                    {new Date(entry.created_at).toLocaleString()}
-                  </time>
-                </p>
-                <p>
-                  Matched: {entry.matched_requirements_count}
-                  {" · "}Possible gaps: {entry.possible_gaps_count}
-                  {" · "}Needs review: {entry.needs_review_count}
-                </p>
-              </div>
-              <div className="job-comparison-action">
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => setSelected(entry)}
-                >
-                  View
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
+        {loading ? (
+          <p className="jobs-message" role="status">Loading saved comparisons…</p>
+        ) : error ? (
+          <div className="jobs-message">
+            <p role="alert">Could not load saved comparisons: {error}</p>
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => {
+                setError(null);
+                setLoading(true);
+                setAttempt((value) => value + 1);
+              }}
+            >
+              Retry
+            </button>
+          </div>
+        ) : entries.length === 0 ? (
+          <p className="jobs-message">You have no saved comparisons yet.</p>
+        ) : (
+          <ul className="saved-jobs-list" aria-label="Saved comparisons">
+            {entries.map((entry) => (
+              <li key={entry.id} className="comparison-history-row">
+                <div className="history-job">
+                  <h2>{entry.job_title}</h2>
+                  <p>{entry.company_name}</p>
+                </div>
+                <time className="history-date" dateTime={entry.created_at}>
+                  <span>
+                    {new Date(entry.created_at).toLocaleDateString(undefined, {
+                      day: "numeric", month: "short", year: "numeric",
+                    })}
+                  </span>
+                  <span>
+                    {new Date(entry.created_at).toLocaleTimeString(undefined, {
+                      hour: "2-digit", minute: "2-digit",
+                    })}
+                  </span>
+                </time>
+                <div className="history-counts">
+                  <span
+                    className="history-count comparison-category"
+                    data-category="matched_requirements"
+                  >
+                    <ComparisonStatusIcon category="matched_requirements" />
+                    {entry.matched_requirements_count} matched
+                  </span>
+                  <span
+                    className="history-count comparison-category"
+                    data-category="possible_gaps"
+                  >
+                    <ComparisonStatusIcon category="possible_gaps" />
+                    {entry.possible_gaps_count} possible gaps
+                  </span>
+                  <span
+                    className="history-count comparison-category"
+                    data-category="needs_review"
+                  >
+                    <ComparisonStatusIcon category="needs_review" />
+                    {entry.needs_review_count} needs review
+                  </span>
+                </div>
+                <div className="job-comparison-action history-view">
+                  <button
+                    type="button"
+                    className="cv-save job-primary"
+                    aria-label={
+                      `View comparison for ${entry.job_title} at `
+                      + `${entry.company_name}, `
+                      + new Date(entry.created_at).toLocaleString()
+                    }
+                    onClick={() => setSelected(entry)}
+                  >
+                    <span>View</span>
+                    <Icon name="arrow-right" />
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </main>
   );
 }
