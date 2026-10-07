@@ -117,6 +117,52 @@
   gap: var(--space-5);
   margin-bottom: var(--space-6);
 }
+.dashboard-start {
+  display: grid;
+  gap: var(--space-3);
+}
+.dashboard-start > h2,
+.dashboard-start__section > h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+.dashboard-start__section {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+}
+.dashboard-start .current-cv-strip {
+  padding: 0;
+  border: 0;
+}
+.dashboard-start .current-cv-summary > span {
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.dashboard-cv-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+.dashboard-cv-form {
+  display: grid;
+  gap: var(--space-3);
+}
+.dashboard-cv-form .cv-dropzone {
+  min-height: 0;
+  padding: var(--space-4);
+}
+.dashboard-cv-form .cv-dropzone p {
+  margin-top: var(--space-2);
+}
+.dashboard-start .saved-cv-preview {
+  padding: var(--space-4);
+}
 .dashboard-cards {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -197,6 +243,9 @@
   }
   .dashboard-recent .job-primary {
     justify-self: start;
+  }
+  .dashboard-cv-actions {
+    justify-content: flex-start;
   }
 }
 .jobs-page .job-primary {
