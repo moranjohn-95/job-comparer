@@ -1032,6 +1032,7 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
 
 function ComparisonsView({ token }: { token: string }) {
   const [entries, setEntries] = useState<ComparisonSummary[]>([]);
+  const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
   const [selected, setSelected] = useState<ComparisonSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1074,13 +1075,37 @@ function ComparisonsView({ token }: { token: string }) {
       onSelect={() => setSelected(null)}
     />
   );
+  const sortedEntries = [...entries].sort((left, right) => {
+    const difference = Date.parse(left.created_at) - Date.parse(right.created_at)
+      || left.id - right.id;
+    return sortOrder === "oldest" ? difference : -difference;
+  });
   return (
     <main
       className="main-content jobs-page jobs-list-page comparison-history-page"
     >
       <div className="jobs-heading">
         <h1>Comparisons</h1>
-        <p className="history-order">Newest first</p>
+        <select
+          className="history-order"
+          aria-label="Sort comparison history"
+          value={sortOrder}
+          onPointerDown={(event) => {
+            event.currentTarget.dataset.pointerFocus = "true";
+          }}
+          onKeyDown={(event) => {
+            delete event.currentTarget.dataset.pointerFocus;
+          }}
+          onBlur={(event) => {
+            delete event.currentTarget.dataset.pointerFocus;
+          }}
+          onChange={(event) => setSortOrder(
+            event.target.value === "oldest" ? "oldest" : "newest",
+          )}
+        >
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
       </div>
       <div className="jobs-table">
         <div className="jobs-table-header" aria-hidden="true">
@@ -1110,7 +1135,7 @@ function ComparisonsView({ token }: { token: string }) {
           <p className="jobs-message">You have no saved comparisons yet.</p>
         ) : (
           <ul className="saved-jobs-list" aria-label="Saved comparisons">
-            {entries.map((entry) => (
+            {sortedEntries.map((entry) => (
               <li key={entry.id} className="comparison-history-row">
                 <div className="history-job">
                   <h2>{entry.job_title}</h2>
@@ -1134,21 +1159,21 @@ function ComparisonsView({ token }: { token: string }) {
                     data-category="matched_requirements"
                   >
                     <ComparisonStatusIcon category="matched_requirements" />
-                    {entry.matched_requirements_count} matched
+                    <span>{entry.matched_requirements_count} matched</span>
                   </span>
                   <span
                     className="history-count comparison-category"
                     data-category="possible_gaps"
                   >
                     <ComparisonStatusIcon category="possible_gaps" />
-                    {entry.possible_gaps_count} possible gaps
+                    <span>{entry.possible_gaps_count} possible gaps</span>
                   </span>
                   <span
                     className="history-count comparison-category"
                     data-category="needs_review"
                   >
                     <ComparisonStatusIcon category="needs_review" />
-                    {entry.needs_review_count} needs review
+                    <span>{entry.needs_review_count} needs review</span>
                   </span>
                 </div>
                 <div className="job-comparison-action history-view">
