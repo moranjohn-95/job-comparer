@@ -36,7 +36,7 @@ import "./App.css";
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 type View =
   | "home" | "dashboard" | "jobs" | "add-job" | "comparisons" | "my-cv"
-  | "login" | "signup";
+  | "dashboard-comparison" | "login" | "signup";
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
 type RequirementCategory =
@@ -1346,6 +1346,139 @@ function MyCvView({ token, visible, onSaved }: {
   );
 }
 
+function DashboardOverview({ token, onNavigate, onView }: {
+  token: string;
+  onNavigate: (section: "my-cv" | "jobs" | "comparisons") => void;
+  onView: (entry: ComparisonSummary) => void;
+}) {
+  const [data, setData] = useState<{
+    hasCv: boolean;
+    jobCount: number;
+    comparisons: ComparisonSummary[];
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    let active = true;
+    void Promise.all([
+      getSavedCv(token, controller.signal),
+      getJobs(token, controller.signal),
+      getComparisonSummaries(token, controller.signal),
+    ]).then(
+      ([cv, jobs, comparisons]) => {
+        if (!active) return;
+        setData({
+          hasCv: cv !== null, jobCount: jobs.length,
+          comparisons: [...comparisons].sort((left, right) =>
+            Date.parse(right.created_at) - Date.parse(left.created_at)
+              || right.id - left.id),
+        });
+      },
+      (caught: unknown) => {
+        if (!active) return;
+        setError(caught instanceof ApiError
+          ? caught.message : "Unable to load your overview. Please try again.");
+      },
+    );
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [token, attempt]);
+
+  const cards = [
+    { section: "my-cv", icon: "document", label: "My CV",
+      value: data?.hasCv ? "Saved" : "Not added" },
+    { section: "jobs", icon: "briefcase", label: "Saved jobs",
+      value: data?.jobCount },
+    { section: "comparisons", icon: "arrows", label: "Comparisons",
+      value: data?.comparisons.length },
+  ] as const;
+  return (
+    <section className="dashboard-overview" aria-label="Account overview">
+      {error && (
+        <div className="jobs-message">
+          <p role="alert">Could not load dashboard: {error}</p>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setError(null);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Retry
+          </button>
+        </div>
+      )}
+      {!data && !error && <p role="status">Loading dashboard…</p>}
+      <div className="dashboard-cards">
+        {cards.map((card) => (
+          <button
+            key={card.section}
+            type="button"
+            className="dashboard-card"
+            onClick={() => onNavigate(card.section)}
+          >
+            <Icon name={card.icon} />
+            <span>{card.label}</span>
+            <strong>{data ? card.value : error ? "Unavailable" : "Loading…"}</strong>
+          </button>
+        ))}
+      </div>
+      <section className="dashboard-recent" aria-labelledby="recent-heading">
+        <div className="jobs-heading">
+          <h2 id="recent-heading">Recent comparisons</h2>
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => onNavigate("comparisons")}
+          >
+            View all
+          </button>
+        </div>
+        {data ? (data.comparisons.length === 0 ? (
+          <p className="jobs-message">Your saved comparisons will appear here.</p>
+        ) : (
+          <ul className="saved-jobs-list" aria-label="Recent comparisons">
+            {data.comparisons.slice(0, 3).map((entry) => (
+              <li key={entry.id}>
+                <div>
+                  <h3>{entry.job_title}</h3>
+                  <p>{entry.company_name}</p>
+                </div>
+                <time dateTime={entry.created_at}>
+                  {new Date(entry.created_at).toLocaleString(undefined, {
+                    day: "numeric", month: "short", year: "numeric",
+                    hour: "2-digit", minute: "2-digit",
+                  })}
+                </time>
+                <button
+                  type="button"
+                  className="cv-save job-primary"
+                  aria-label={`View comparison: ${entry.job_title} at ${
+                    entry.company_name
+                  }, ${new Date(entry.created_at).toLocaleString()}`}
+                  onClick={() => onView(entry)}
+                >
+                  View <Icon name="arrow-right" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )) : (
+          <p className="jobs-message">
+            {error ? "Recent comparisons are unavailable. Retry above."
+              : "Loading recent comparisons…"}
+          </p>
+        )}
+      </section>
+    </section>
+  );
+}
+
 function ComparisonsView({ token, historyCache }: {
   token: string;
   historyCache: JobHistoryCache;
@@ -1750,7 +1883,7 @@ function AddJobForm({ token, onCancel, onSaved }: {
 
 function JobsView({ token, selectedJobId, onSelectJob,
   comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs,
-  comparisonActions, comparisonRuns, historyCache }: {
+  comparisonActions, comparisonRuns, historyCache, onJobSaved }: {
   token: string;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
@@ -1762,6 +1895,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
   comparisonActions: JobComparisonActions;
   comparisonRuns: Record<number, ComparisonRun>;
   historyCache: JobHistoryCache;
+  onJobSaved: () => void;
 }) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1799,6 +1933,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
         token={token}
         onCancel={onShowJobs}
         onSaved={(job) => {
+          onJobSaved();
           setJobs((current) => [
             job, ...current.filter((item) => item.id !== job.id),
           ]);
@@ -1981,6 +2116,9 @@ function App() {
     () => new Map(),
   );
   const [comparisonCvOutdated, setComparisonCvOutdated] = useState(false);
+  const [overviewVersion, setOverviewVersion] = useState(0);
+  const [dashboardSelection, setDashboardSelection] =
+    useState<ComparisonSummary | null>(null);
   const cvVersion = useRef(0);
   const isPersistingRef = useRef(false);
   const comparisonRequests = useRef(new Set<number>());
@@ -2000,6 +2138,8 @@ function App() {
     setCvVisited(false);
     setHistoryCache(new Map());
     setComparisonCvOutdated(false);
+    setOverviewVersion(0);
+    setDashboardSelection(null);
     cvVersion.current = 0;
   }
 
@@ -2078,6 +2218,7 @@ function App() {
     } finally {
       isPersistingRef.current = false;
       setIsSavingDraft(false);
+      setOverviewVersion((value) => value + 1);
     }
   }
   function retrySave() {
@@ -2104,6 +2245,7 @@ function App() {
     try {
       const result = await compareJob(token, jobId);
       if (comparisonRequests.current !== requests) return null;
+      setOverviewVersion((value) => value + 1);
       setComparisonRuns((current) => ({
         ...current,
         [jobId]: {
@@ -2195,6 +2337,35 @@ function App() {
     setStatus("checking");
     setCheckNumber((current) => current + 1);
   }
+  function showDashboard() {
+    setView("dashboard");
+  }
+  function showJobs() {
+    if (!token || !user) return openLogin();
+    if (view === "jobs" || view === "add-job") {
+      setSelectedJobId(null);
+      setSavedComparisonId(null);
+      setCurrentComparisonJobId(null);
+      setJobsScreen("jobs");
+      setView("jobs");
+    } else {
+      setView(jobsScreen);
+    }
+    setJobsVisited(true);
+  }
+  function showCv() {
+    if (!token || !user) return openLogin();
+    setCvVisited(true);
+    setView("my-cv");
+  }
+  function showComparisons() {
+    if (!token || !user) return openLogin();
+    if (view === "comparisons") {
+      setComparisonVisit((value) => value + 1);
+    }
+    setComparisonsVisited(true);
+    setView("comparisons");
+  }
   function openLogin() {
     setError(null);
     setView("login");
@@ -2280,7 +2451,7 @@ function App() {
                 type="button"
                 className="nav-button"
                 aria-current={view === "dashboard" ? "page" : undefined}
-                onClick={() => setView("dashboard")}
+                onClick={showDashboard}
               >
                 <Icon name="grid" />
                 Dashboard
@@ -2293,21 +2464,7 @@ function App() {
                 aria-current={(view === "jobs" || view === "add-job")
                   && !viewingJobComparison
                   ? "page" : undefined}
-                onClick={() => {
-                  if (token && user) {
-                    if (view === "jobs" || view === "add-job") {
-                      setSelectedJobId(null);
-                      setSavedComparisonId(null);
-                      setCurrentComparisonJobId(null);
-                      setJobsScreen("jobs");
-                      setView("jobs");
-                    } else {
-                      setView(jobsScreen);
-                    }
-                    setJobsVisited(true);
-                  }
-                  else openLogin();
-                }}
+                onClick={showJobs}
               >
                 <Icon name="briefcase" />
                 Jobs
@@ -2318,13 +2475,7 @@ function App() {
                 type="button"
                 className="nav-button"
                 aria-current={view === "my-cv" ? "page" : undefined}
-                onClick={() => {
-                  if (token && user) {
-                    setCvVisited(true);
-                    setView("my-cv");
-                  }
-                  else openLogin();
-                }}
+                onClick={showCv}
               >
                 <Icon name="document" />
                 My CV
@@ -2335,17 +2486,9 @@ function App() {
                 type="button"
                 className="nav-button"
                 aria-current={view === "comparisons" || viewingJobComparison
+                  || view === "dashboard-comparison"
                   ? "page" : undefined}
-                onClick={() => {
-                  if (token && user) {
-                    if (view === "comparisons") {
-                      setComparisonVisit((value) => value + 1);
-                    }
-                    setComparisonsVisited(true);
-                    setView("comparisons");
-                  }
-                  else openLogin();
-                }}
+                onClick={showComparisons}
               >
                 <Icon name="arrows" />
                 Comparisons
@@ -2388,6 +2531,7 @@ function App() {
             token={token}
             selectedJobId={selectedJobId}
             historyCache={historyCache}
+            onJobSaved={() => setOverviewVersion((value) => value + 1)}
             onSelectJob={setSelectedJobId}
             comparisonId={savedComparisonId}
             comparisonRuns={comparisonRuns}
@@ -2433,6 +2577,7 @@ function App() {
           visible={view === "my-cv"}
           onSaved={() => {
             cvVersion.current += 1;
+            setOverviewVersion((value) => value + 1);
             setHistoryCache(new Map());
             setComparisonCvOutdated(true);
             setComparisonRuns((current) => Object.fromEntries(
@@ -2443,23 +2588,28 @@ function App() {
           }}
         />
       )}
-      {view !== "jobs" && view !== "add-job" && view !== "comparisons"
-        && view !== "my-cv" && (
-        <main
-          className={comparison
-            ? "main-content main-content--comparison"
-            : "main-content"}
-        >
-          <div className="page-heading">
-            {comparison ? (
-              <h1 id="comparison-heading">Comparison results</h1>
-            ) : (
-              <>
-                <p className="eyebrow">Workspace</p>
-                <h1>Dashboard</h1>
-                <p>Compare your CV with key aspects of job descriptions.</p>
-              </>
-            )}
+      {view === "dashboard-comparison" && dashboardSelection && token && user && (
+        <SavedComparisonHistory
+          key={`${user.id}:${token}:${dashboardSelection.id}`}
+          token={token}
+          job={{
+            id: dashboardSelection.job_id,
+            title: dashboardSelection.job_title,
+            company_name: dashboardSelection.company_name,
+          }}
+          comparisonId={dashboardSelection.id}
+          historyCache={historyCache}
+          backLabel="Back to Dashboard"
+          onSelect={() => {
+            setDashboardSelection(null);
+            setView("dashboard");
+          }}
+        />
+      )}
+      {view === "dashboard" && (
+        <main className="main-content jobs-page jobs-list-page dashboard-page">
+          <div className="jobs-heading">
+            <h1>Dashboard</h1>
           </div>
           {isSavingDraft && (
             <p role="status">
@@ -2476,8 +2626,28 @@ function App() {
               </button>
             </section>
           )}
+          {token && user && !isSavingDraft && !saveError && !savedJob && (
+            <DashboardOverview
+              key={`${user.id}:${token}:${overviewVersion}`}
+              token={token}
+              onNavigate={(section) => {
+                if (section === "my-cv") setCvVisited(true);
+                if (section === "jobs") setJobsVisited(true);
+                if (section === "comparisons") {
+                  setComparisonsVisited(true);
+                  setComparisonVisit((value) => value + 1);
+                }
+                setView(section === "jobs" ? jobsScreen : section);
+              }}
+              onView={(entry) => {
+                setDashboardSelection(entry);
+                setView("dashboard-comparison");
+              }}
+            />
+          )}
           {savedJob && (
             <section className="save-confirmation">
+              {comparison && <h2 id="comparison-heading">Comparison results</h2>}
               <div className={comparison ? "comparison-job-bar" : undefined}>
                 {comparison ? (
                   <div className="comparison-job-summary">

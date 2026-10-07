@@ -171,7 +171,7 @@ export async function getJobs(
   })
   if (!response.ok) throw new ApiError(await getErrorMessage(response))
   const body: unknown = await response.json()
-  if (!Array.isArray(body)) {
+  if (response.status === 206 || !Array.isArray(body)) {
     throw new ApiError('The jobs response was invalid. Please try again.')
   }
   return body.map((value: unknown) => {

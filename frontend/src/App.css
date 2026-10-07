@@ -112,6 +112,93 @@
   justify-content: space-between;
   gap: var(--space-4);
 }
+.dashboard-overview {
+  display: grid;
+  gap: var(--space-5);
+  margin-bottom: var(--space-6);
+}
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+.dashboard-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dashboard-card .nav-icon {
+  color: var(--color-accent);
+}
+.dashboard-card strong {
+  grid-column: 2;
+  font-size: 1.25rem;
+}
+.dashboard-card:hover {
+  border-color: var(--color-accent);
+}
+.dashboard-overview button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.dashboard-recent .jobs-heading {
+  margin-bottom: var(--space-3);
+}
+.dashboard-recent h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.dashboard-recent li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: var(--space-5);
+}
+.dashboard-recent h3 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+.dashboard-recent time {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+.dashboard-recent .job-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-accent-deep);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.dashboard-recent .job-primary:hover {
+  background: var(--color-accent-soft);
+}
+@media (max-width: 720px) {
+  .dashboard-cards,
+  .dashboard-recent li {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .dashboard-recent li {
+    gap: var(--space-3);
+  }
+  .dashboard-recent .job-primary {
+    justify-self: start;
+  }
+}
 .jobs-page .job-primary {
   width: auto;
   flex-shrink: 0;
