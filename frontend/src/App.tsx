@@ -31,12 +31,22 @@ import {
   type SavedComparison,
   type ComparisonSummary,
 } from "./api";
+import { formatCvPreview } from "./formatCvPreview";
 import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
-type View =
-  | "home" | "dashboard" | "jobs" | "add-job" | "comparisons" | "my-cv"
-  | "dashboard-comparison" | "login" | "signup";
+const appViews = ["home", "dashboard", "jobs", "add-job", "comparisons", "my-cv",
+  "dashboard-comparison", "login", "signup"] as const;
+type View = typeof appViews[number];
+const publicPageTitles = { privacy: "Privacy", terms: "Terms", contact: "Contact" } as const;
+type PublicPage = keyof typeof publicPageTitles;
+
+function currentPublicPage(): PublicPage | null {
+  const base = import.meta.env.BASE_URL;
+  if (!window.location.pathname.startsWith(base)) return null;
+  const page = window.location.pathname.slice(base.length).replace(/\/$/, "");
+  return Object.hasOwn(publicPageTitles, page) ? page as PublicPage : null;
+}
 type CvInputMethod = "file" | "text" | null;
 type SaveStage = "cv" | "job" | "complete";
 type RequirementCategory =
@@ -196,12 +206,58 @@ function BrandMark() {
   </>;
 }
 
-function AuthLayout({ headingId, onBack, children }: {
-  headingId: string;
-  onBack: () => void;
+function SiteFooter({ currentPage, onNavigate }: {
+  currentPage: PublicPage | null;
+  onNavigate: (page: PublicPage) => void;
+}) {
+  return <footer className="site-footer">
+    <div className="site-footer__inner">
+      <nav className="site-footer__links" aria-label="Footer">
+        {(Object.keys(publicPageTitles) as PublicPage[]).map((page) => (
+          <a key={page} href={`${import.meta.env.BASE_URL}${page}`}
+            aria-current={currentPage === page ? "page" : undefined}
+            onClick={(event) => {
+              if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+              event.preventDefault();
+              onNavigate(page);
+            }}>
+            {publicPageTitles[page]}
+          </a>
+        ))}
+      </nav>
+      <div className="site-footer__identity">
+        <span className="brand site-footer__brand"><BrandMark /></span>
+      </div>
+    </div>
+  </footer>;
+}
+
+function PageFrame({ publicPage, signedIn, onNavigate, onReturn, children }: {
+  publicPage: PublicPage | null;
+  signedIn: boolean;
+  onNavigate: (page: PublicPage) => void;
+  onReturn: () => void;
   children: ReactNode;
 }) {
-  return <main className="login-page">
+  return <div className="page-frame">
+    <div className="page-content" hidden={publicPage !== null}>{children}</div>
+    {publicPage && <AuthLayout headingId="public-page-heading" onBack={onReturn}
+      className="login-page public-info-page"
+      backLabel={signedIn ? "Back to dashboard" : "Back to home"}>
+      <h1 id="public-page-heading" tabIndex={-1}>{publicPageTitles[publicPage]}</h1>
+    </AuthLayout>}
+    <SiteFooter currentPage={publicPage} onNavigate={onNavigate} />
+  </div>;
+}
+
+function AuthLayout({ headingId, onBack, backLabel = "Back to home", className = "login-page", children }: {
+  headingId: string;
+  onBack: () => void;
+  backLabel?: string;
+  className?: string;
+  children: ReactNode;
+}) {
+  return <main className={className}>
     <div className="auth-layout">
       <a className="auth-back-link" href={import.meta.env.BASE_URL} onClick={(event) => {
         if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
@@ -209,7 +265,7 @@ function AuthLayout({ headingId, onBack, children }: {
         onBack();
       }}>
         <Icon name="arrow-left" />
-        Back to home
+        {backLabel}
       </a>
       <section className="login-card" aria-labelledby={headingId}>
         <div className="brand login-brand"><BrandMark /></div>
@@ -1300,7 +1356,7 @@ function MyCvView({ token, visible, onSaved }: {
         <p className="jobs-message">No CV saved yet.</p>
       ) : preview ? (
         <section className="saved-cv-preview" aria-label="Saved CV text">
-          <p>{text}</p>
+          <p>{formatCvPreview(text)}</p>
         </section>
       ) : (
         <section
@@ -2427,6 +2483,7 @@ function App() {
   const [status, setStatus] = useState<ConnectionStatus>("checking");
   const [checkNumber, setCheckNumber] = useState(0);
   const [view, setView] = useState<View>("home");
+  const [publicPage, setPublicPage] = useState<PublicPage | null>(currentPublicPage);
   const [token, setToken] = useState<string | null>(null);
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -2473,6 +2530,47 @@ function App() {
   const viewingJobComparison = view === "jobs" && (
     savedComparisonId !== null || currentComparisonJobId !== null
   );
+
+  useEffect(() => {
+    function restorePublicNavigation(event: PopStateEvent) {
+      setPublicPage(currentPublicPage());
+      const previousView: unknown = event.state?.jobComparerView;
+      if (typeof previousView === "string" && appViews.includes(previousView as View)) {
+        const requiresSession = !["home", "login", "signup"].includes(previousView);
+        setView(requiresSession && (!token || !user) ? "home" : previousView as View);
+      }
+    }
+    window.addEventListener("popstate", restorePublicNavigation);
+    return () => window.removeEventListener("popstate", restorePublicNavigation);
+  }, [token, user]);
+
+  useEffect(() => {
+    if (publicPage) document.getElementById("public-page-heading")?.focus();
+  }, [publicPage]);
+
+  function openPublicPage(page: PublicPage) {
+    if (page === publicPage) return;
+    const state = { ...window.history.state, jobComparerView: view };
+    window.history.replaceState(state, "", window.location.href);
+    window.history.pushState(state, "", `${import.meta.env.BASE_URL}${page}`);
+    setPublicPage(page);
+  }
+  function leavePublicPage(nextView: View) {
+    if (publicPage === null) return;
+    window.history.pushState({ ...window.history.state, jobComparerView: nextView },
+      "", import.meta.env.BASE_URL);
+    setPublicPage(null);
+  }
+  const pageFrameProps = {
+    publicPage,
+    signedIn: Boolean(token && user),
+    onNavigate: openPublicPage,
+    onReturn: () => {
+      const nextView = token && user ? "dashboard" : "home";
+      leavePublicPage(nextView);
+      setView(nextView);
+    },
+  };
 
   function clearComparisonRequests() {
     handoffRequest.current?.abort();
@@ -2719,10 +2817,12 @@ function App() {
     setCheckNumber((current) => current + 1);
   }
   function showDashboard() {
+    leavePublicPage("dashboard");
     setView("dashboard");
   }
   function showJobs() {
     if (!token || !user) return openLogin();
+    leavePublicPage(view === "jobs" || view === "add-job" ? "jobs" : jobsScreen);
     if (view === "jobs" || view === "add-job") {
       setSelectedJobId(null);
       setSavedComparisonId(null);
@@ -2736,11 +2836,13 @@ function App() {
   }
   function showCv() {
     if (!token || !user) return openLogin();
+    leavePublicPage("my-cv");
     setCvVisited(true);
     setView("my-cv");
   }
   function showComparisons() {
     if (!token || !user) return openLogin();
+    leavePublicPage("comparisons");
     if (view === "comparisons") {
       setComparisonVisit((value) => value + 1);
     }
@@ -2757,6 +2859,7 @@ function App() {
     setView("signup");
   }
   function logout() {
+    leavePublicPage("home");
     clearComparisonRequests();
     setIsSavingDraft(false);
     setSaveStage("cv");
@@ -2786,6 +2889,7 @@ function App() {
   };
   if (view === "login")
     return (
+      <PageFrame {...pageFrameProps}>
       <LoginView
         onBack={() => setView("home")}
         onLogin={handleLogin}
@@ -2796,9 +2900,11 @@ function App() {
         error={error}
         isSubmitting={isSubmitting}
       />
+      </PageFrame>
     );
   if (view === "signup")
     return (
+      <PageFrame {...pageFrameProps}>
       <SignupView
         onBack={() => setView("home")}
         onLogin={openLogin}
@@ -2807,10 +2913,11 @@ function App() {
         isSubmitting={isSubmitting}
         isSavingDraft={isSavingDraft}
       />
+      </PageFrame>
     );
   if (view === "home")
     return (
-      <>
+      <PageFrame {...pageFrameProps}>
         <HomeView
           status={status}
           onLogin={openLogin}
@@ -2825,7 +2932,7 @@ function App() {
             ))}
           </div>
         )}
-      </>
+      </PageFrame>
     );
   return (
     <div className="app-shell">
@@ -2908,6 +3015,7 @@ function App() {
         </nav>
         {user && token && <p className="sidebar-identity">{user.email}</p>}
       </aside>
+      <PageFrame {...pageFrameProps}>
       {jobsVisited && token && user && (
         <Activity mode={view === "jobs" || view === "add-job"
           ? "visible" : "hidden"}>
@@ -3064,6 +3172,7 @@ function App() {
           }}
         />
       )}
+      </PageFrame>
     </div>
   );
 }
