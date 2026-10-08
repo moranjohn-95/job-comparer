@@ -1697,10 +1697,11 @@ h1 {
   font-size: var(--text-xs);
   line-height: 1.5;
 }
-.form-switch {
+.login-card .form-switch {
   margin: var(--space-5) 0 0;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
+  line-height: 1.5;
 }
 .cv-starter {
   margin-top: clamp(var(--space-9), 12vw, 144px);
@@ -1832,11 +1833,34 @@ h1 {
   display: grid;
   min-height: 100vh;
   place-items: center;
-  padding: var(--space-5);
+  padding: var(--space-5) var(--space-4);
+}
+.auth-layout {
+  width: min(100%, 440px);
+  min-width: 0;
+}
+.auth-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+  color: var(--color-accent-deep);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: 1.5;
+  text-decoration: none;
+}
+.auth-back-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.auth-back-link:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
 }
 .login-card {
-  width: min(100%, 432px);
-  padding: clamp(var(--space-5), 7vw, var(--space-7));
+  width: 100%;
+  padding: clamp(28px, 5vw, var(--space-6));
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
@@ -1855,21 +1879,25 @@ h1 {
   text-underline-offset: 3px;
 }
 .login-brand {
-  margin: var(--space-8) 0 var(--space-7);
+  display: flex;
+  margin: 0 0 var(--space-5);
   padding: 0;
 }
 .login-card h1 {
-  font-size: clamp(2rem, 8vw, 2.8rem);
+  margin: 0;
+  font-size: clamp(1.75rem, 5vw, 2rem);
+  line-height: 1.2;
 }
 .login-intro {
-  margin: var(--space-4) 0 0;
+  margin: var(--space-2) 0 0;
   color: var(--color-text-muted);
+  font-size: 1rem;
   line-height: 1.6;
 }
 .login-form {
   display: grid;
   gap: var(--space-2);
-  margin-top: var(--space-7);
+  margin-top: var(--space-5);
 }
 .login-form label {
   color: var(--color-text);
@@ -1878,19 +1906,24 @@ h1 {
 }
 .login-form input {
   min-width: 0;
-  margin-bottom: var(--space-3);
+  width: 100%;
+  min-height: 46px;
+  margin-bottom: var(--space-2);
   padding: 11px 12px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
   color: var(--color-text);
+  font: inherit;
 }
 .login-form input:focus {
   border-color: var(--color-accent);
   outline: 3px solid var(--color-accent-soft);
 }
 .login-form button {
-  margin-top: var(--space-2);
+  width: 100%;
+  min-height: 46px;
+  margin-top: var(--space-1);
   padding: 11px 14px;
   border: 1px solid var(--color-accent);
   border-radius: var(--radius-sm);
@@ -1906,6 +1939,9 @@ h1 {
 .login-form button:disabled {
   cursor: wait;
   opacity: 0.7;
+}
+.login-card .form-error {
+  overflow-wrap: anywhere;
 }
 .form-error {
   margin: 0 0 var(--space-2);

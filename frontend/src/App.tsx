@@ -85,7 +85,7 @@ type JobHistoryCache = Map<number, {
 }>;
 type IconName =
   | "grid" | "briefcase" | "document" | "arrows" | "login" | "logout"
-  | "plus" | "arrow-right";
+  | "plus" | "arrow-right" | "arrow-left";
 type DraftProps = {
   cvFile: File | null;
   cvText: string;
@@ -137,6 +137,7 @@ function Icon({ name }: { name: IconName }): ReactNode {
   const paths: Record<IconName, ReactNode> = {
     plus: <path d="M12 5v14M5 12h14" />,
     "arrow-right": <path d="M4 12h16M14 6l6 6-6 6" />,
+    "arrow-left": <path d="M20 12H4M10 6l-6 6 6 6" />,
     grid: (
       <>
         <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -195,14 +196,39 @@ function BrandMark() {
   </>;
 }
 
+function AuthLayout({ headingId, onBack, children }: {
+  headingId: string;
+  onBack: () => void;
+  children: ReactNode;
+}) {
+  return <main className="login-page">
+    <div className="auth-layout">
+      <a className="auth-back-link" href={import.meta.env.BASE_URL} onClick={(event) => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        onBack();
+      }}>
+        <Icon name="arrow-left" />
+        Back to home
+      </a>
+      <section className="login-card" aria-labelledby={headingId}>
+        <div className="brand login-brand"><BrandMark /></div>
+        {children}
+      </section>
+    </div>
+  </main>;
+}
+
 function LoginView({
   onBack,
   onLogin,
+  onSignup,
   error,
   isSubmitting,
 }: {
   onBack: () => void;
   onLogin: (email: string, password: string) => void;
+  onSignup: () => void;
   error: string | null;
   isSubmitting: boolean;
 }) {
@@ -212,13 +238,7 @@ function LoginView({
     onLogin(String(form.get("email")), String(form.get("password")));
   }
   return (
-    <main className="login-page">
-      <section className="login-card" aria-labelledby="login-heading">
-        <button type="button" className="text-button" onClick={onBack}>
-          Back to home
-        </button>
-        <div className="brand login-brand">Job Comparer</div>
-        <p className="eyebrow">Account</p>
+    <AuthLayout headingId="login-heading" onBack={onBack}>
         <h1 id="login-heading">Log in</h1>
         <p className="login-intro">
           Sign in to access your Job Comparer account.
@@ -251,8 +271,13 @@ function LoginView({
             {isSubmitting ? "Logging in…" : "Log in"}
           </button>
         </form>
-      </section>
-    </main>
+        <p className="form-switch">
+          New to Job Comparer?{" "}
+          <button type="button" className="text-button" onClick={onSignup}>
+            Create an account
+          </button>
+        </p>
+    </AuthLayout>
   );
 }
 
@@ -284,13 +309,7 @@ function SignupView({
     ? "Create an account to save your CV and job description."
     : "Create an account to compare your CV with the jobs you want.";
   return (
-    <main className="login-page">
-      <section className="login-card" aria-labelledby="signup-heading">
-        <button type="button" className="text-button" onClick={onBack}>
-          Back to home
-        </button>
-        <div className="brand login-brand">Job Comparer</div>
-        <p className="eyebrow">Account</p>
+    <AuthLayout headingId="signup-heading" onBack={onBack}>
         <h1 id="signup-heading">Sign up</h1>
         <p className="login-intro">{intro}</p>
         <form className="login-form" onSubmit={submit}>
@@ -336,8 +355,7 @@ function SignupView({
             Log in
           </button>
         </p>
-      </section>
-    </main>
+    </AuthLayout>
   );
 }
 
@@ -2771,6 +2789,10 @@ function App() {
       <LoginView
         onBack={() => setView("home")}
         onLogin={handleLogin}
+        onSignup={() => {
+          setError(null);
+          setView("signup");
+        }}
         error={error}
         isSubmitting={isSubmitting}
       />
