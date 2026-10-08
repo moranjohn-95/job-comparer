@@ -358,7 +358,9 @@ function StartWithCV({
   busy = false,
   cvSaved = false,
   jobChoice,
+  jobAction,
   cvChoice,
+  cvAction,
   hideJobFields = false,
   hideCvFields = false,
   unavailable = false,
@@ -370,7 +372,9 @@ function StartWithCV({
   busy?: boolean;
   cvSaved?: boolean;
   jobChoice?: ReactNode;
+  jobAction?: ReactNode;
   cvChoice?: ReactNode;
+  cvAction?: ReactNode;
   hideJobFields?: boolean;
   hideCvFields?: boolean;
   unavailable?: boolean;
@@ -399,6 +403,7 @@ function StartWithCV({
         <span className="step-number" aria-hidden="true">1</span>
         {compact ? "Choose a job" : "Job details"}
       </legend>}
+      <div className="dashboard-step-content">
       {jobChoice}
       {!hideJobFields && <>
       <div className="job-details">
@@ -422,6 +427,8 @@ function StartWithCV({
         placeholder="Paste the full job description, responsibilities, and requirements here."
         rows={compact ? 6 : 10} />
       </>}
+      </div>
+      {compareFlow && <div className="dashboard-step-action">{jobAction}</div>}
     </fieldset>
   );
   const cvMethod = (
@@ -451,10 +458,11 @@ function StartWithCV({
       )
   );
   const cvFields = (
-      <fieldset className="starter-fields" disabled={busy || unavailable}>
+      <fieldset className="starter-fields dashboard-step--cv" disabled={busy || unavailable}>
       {compareFlow && <legend className="dashboard-step-heading">
         <span className="step-number" aria-hidden="true">2</span>Your CV
       </legend>}
+      <div className="dashboard-step-content">
       {cvChoice}
       {!hideCvFields && <>
       <div className="cv-starter__grid">
@@ -509,47 +517,50 @@ function StartWithCV({
         </div>
       </div>
       </>}
-      {compact && cvMethod}
+      {compareFlow && cvMethod}
+      </div>
+      {compareFlow && <div className="dashboard-step-action">{cvAction}</div>}
       </fieldset>
   );
   const readiness = getReadiness?.(fileError) ?? null;
+  const compareButton = <button
+    type="button"
+    className="cv-save"
+    onClick={() => onSave(fileError)}
+    disabled={busy || unavailable || submissionBlocked || (compact && readiness !== null)}
+    aria-describedby={compact && !submissionBlocked ? "dashboard-compare-readiness" : undefined}
+  >
+    {compareFlow ? busy ? "Working…" : "Compare" : "Save"}
+  </button>;
+  const actions = (
+    <div className="cv-starter__actions dashboard-step--compare">
+      {compareFlow && <h3 className="dashboard-step-heading">
+        <span className="step-number" aria-hidden="true">3</span>Compare
+      </h3>}
+      {compareFlow && <div className="dashboard-step-content compare-readiness">
+        {compact && !submissionBlocked && <p id="dashboard-compare-readiness" role="status">
+          {busy ? "Saving and comparing your details…"
+            : unavailable ? "Saved details must load before comparing."
+            : readiness ?? "Your job and CV are ready to compare."}
+        </p>}
+      </div>}
+      {compareFlow ? <div className="dashboard-step-action">{compareButton}</div> : compareButton}
+    </div>
+  );
   return (
     <section className={`cv-starter${compact ? " cv-starter--compact" : ""}`} aria-labelledby="cv-starter-heading">
       <div className="cv-starter__intro">
         <h2 id="cv-starter-heading">{compareFlow ? "Start a comparison" : "Start with your CV"}</h2>
         {!compact && <p>{compareFlow ? "Choose a job and your CV below, then compare." : "Add a PDF or DOCX, or paste your CV text."}</p>}
       </div>
-      {compact ? (
-        <div className="cv-starter__sections">{jobFields}{cvFields}</div>
-      ) : (
-        <>{compareFlow && jobFields}{cvFields}{!compareFlow && jobFields}</>
-      )}
-      {!compact && cvMethod}
-      <div className="cv-starter__actions">
-        {compact ? (
-          <div className="compare-readiness">
-            <h3 className="dashboard-step-heading">
-              <span className="step-number" aria-hidden="true">3</span>Compare
-            </h3>
-            {!submissionBlocked && <p id="dashboard-compare-readiness" role="status">
-              {busy ? "Saving and comparing your details…"
-                : unavailable ? "Saved details must load before comparing."
-                : readiness ?? "Your job and CV are ready to compare."}
-            </p>}
-          </div>
-        ) : compareFlow && <h3 className="dashboard-step-heading">
-          <span className="step-number" aria-hidden="true">3</span>Compare
-        </h3>}
-        <button
-          type="button"
-          className="cv-save"
-          onClick={() => onSave(fileError)}
-          disabled={busy || unavailable || submissionBlocked || (compact && readiness !== null)}
-          aria-describedby={compact && !submissionBlocked ? "dashboard-compare-readiness" : undefined}
-        >
-          {compareFlow ? busy ? "Working…" : "Compare" : "Save"}
-        </button>
-      </div>
+      {compareFlow ? (
+        <div className="dashboard-comparison-steps">{jobFields}{cvFields}{actions}</div>
+      ) : <>
+        {compact ? <div className="cv-starter__sections">{jobFields}{cvFields}</div>
+          : <>{cvFields}{jobFields}</>}
+        {cvMethod}
+        {actions}
+      </>}
     </section>
   );
 }
@@ -1560,7 +1571,6 @@ function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
             {jobMode === "saved" && (!compact && savedJob ? (
               <div className="dashboard-job-summary">
                 <div><strong>{savedJob.title}</strong><span>{savedJob.company_name}</span></div>
-                <button type="button" className="text-button" onClick={() => setCompact(true)}>Change job</button>
               </div>
             ) : (
               <label className="dashboard-job-picker" htmlFor="dashboard-saved-job">
@@ -1574,30 +1584,37 @@ function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
                 </select>
               </label>
             ))}
-            {compact && (jobMode === "saved" ? (
+            {compact && jobMode === "add" && jobs.length === 0
+              && <p className="dashboard-guidance">Add your first job below.</p>}
+          </>}
+          jobAction={jobMode === "saved" ? (compact ? (
               <button type="button" className="text-button dashboard-job-alternative"
                 onClick={() => setJobMode("add")}>Add new job</button>
-            ) : jobs.length > 0 ? (
+            ) : savedJob ? (
+              <button type="button" className="text-button dashboard-job-alternative"
+                onClick={() => setCompact(true)}>Change job</button>
+            ) : null) : compact && jobs.length > 0 ? (
               <button type="button" className="text-button dashboard-job-alternative"
                 onClick={() => setJobMode("saved")}>Use saved job</button>
-            ) : <p className="dashboard-guidance">Add your first job below.</p>)}
-          </>}
+            ) : null}
           cvChoice={<>
             {savedCv !== null && (replacingCv ? (
               <div className="dashboard-cv-actions">
                 <p>Your current CV will be replaced when you click Compare.</p>
-                <button type="button" className="text-button" onClick={() => setReplacingCv(false)}>Cancel replacement</button>
               </div>
             ) : (
               <div className="current-cv-strip">
                 <div className="current-cv-summary"><Icon name="document" /><span>Using your saved CV</span></div>
-                <div className="dashboard-cv-actions">
-                  <button type="button" className="text-button" onClick={() => setReplacingCv(true)}
-                    aria-label="Replace CV">Replace</button>
-                </div>
               </div>
             ))}
           </>}
+          cvAction={savedCv !== null && (replacingCv ? (
+            <button type="button" className="text-button dashboard-cv-alternative"
+              onClick={() => setReplacingCv(false)}>Cancel replacement</button>
+          ) : (
+            <button type="button" className="text-button dashboard-cv-alternative"
+              onClick={() => setReplacingCv(true)} aria-label="Replace CV">Replace</button>
+          ))}
           cvFile={cvFile} cvText={cvText} jobTitle={jobTitle} companyName={companyName}
           jobDescription={jobDescription} selectedInputMethod={method}
           onFileChange={setCvFile} onCvTextChange={setCvText} onJobTitleChange={setJobTitle}
@@ -1669,26 +1686,41 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
 
   const cards = [
     { section: "my-cv", icon: "document", label: "My CV",
-      value: data?.cvText !== null ? "Saved" : "Not added" },
+      value: data?.cvText != null ? "Saved" : "Not added",
+      detail: data?.cvText != null ? "Use your saved CV." : "Add a CV to compare." },
     { section: "jobs", icon: "briefcase", label: "Saved jobs",
-      value: data?.jobs.length },
+      value: data?.jobs.length,
+      detail: data?.jobs.length ? "Choose a job to compare." : "Add a job to compare." },
     { section: "comparisons", icon: "arrows", label: "Comparisons",
-      value: data?.comparisons.length },
+      value: data?.comparisons.length,
+      detail: data?.comparisons.length ? "Review saved results." : "No saved results yet." },
   ] as const;
   return (
     <section className="dashboard-overview" aria-label="Account overview">
       <div className="dashboard-cards">
         {cards.map((card) => (
-          <button
+          <a
             key={card.section}
-            type="button"
             className="dashboard-card"
-            onClick={() => onNavigate(card.section)}
+            href={`#${card.section}`}
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate(card.section);
+            }}
           >
-            <Icon name={card.icon} />
-            <span>{card.label}</span>
-            <strong>{error ? "Unavailable" : loading ? "Loading…" : card.value}</strong>
-          </button>
+            <span className="dashboard-card__icon" aria-hidden="true">
+              <Icon name={card.icon} />
+            </span>
+            <span className="dashboard-card__content">
+              <strong className="dashboard-card__title">{card.label}</strong>
+              <span className="dashboard-card__value">
+                {error ? "Unavailable" : loading ? "Loading…" : card.value}
+              </span>
+              <span className="dashboard-card__detail">
+                {error ? "Retry to load your details." : loading ? "Checking your details." : card.detail}
+              </span>
+            </span>
+          </a>
         ))}
       </div>
       {error && (
