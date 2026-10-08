@@ -186,6 +186,14 @@ function Icon({ name }: { name: IconName }): ReactNode {
   );
 }
 
+function BrandMark() {
+  return <>
+    <img className="brand-logo" src={`${import.meta.env.BASE_URL}images/job-comparer-logo.svg`}
+      alt="" aria-hidden="true" />
+    <span className="brand-name">Job <span className="brand-name-accent">Comparer</span></span>
+  </>;
+}
+
 function LoginView({
   onBack,
   onLogin,
@@ -561,7 +569,7 @@ function HomeView({
   return (
     <div className="home-page">
       <header className="home-nav">
-        <span className="home-brand">Job Comparer</span>
+        <span className="home-brand"><BrandMark /></span>
         <button type="button" className="home-login" onClick={onLogin}>
           Log in
         </button>
@@ -2767,9 +2775,7 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Primary navigation">
-        <div className="brand">
-          <span>Job Comparer</span>
-        </div>
+        <div className="brand"><BrandMark /></div>
         <nav className="navigation" aria-label="Workspace">
           <p className="nav-label">Workspace</p>
           <ul className="workspace-navigation">

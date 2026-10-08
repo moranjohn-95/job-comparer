@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" role="img" aria-label="Job Comparer">
+  <rect x="5.5" y="5.5" width="20" height="26" rx="4" fill="#0B625D"/>
+  <path d="M10 13h8M10 18h8M10 23h5" stroke="#F5FBF8" stroke-width="1.7" stroke-linecap="round"/>
+  <rect x="15.5" y="9.5" width="19" height="26" rx="4" fill="#E6F3EF" stroke="#0B625D" stroke-width="1.8"/>
+  <path d="M21 17h8M21 22h8M21 27h5" stroke="#0B625D" stroke-width="1.7" stroke-linecap="round"/>
+</svg>
