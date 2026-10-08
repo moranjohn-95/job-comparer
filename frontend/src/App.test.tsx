@@ -268,7 +268,7 @@ test("asks which CV to use and preserves the draft through signup and login", ()
     screen.getByText("Create an account to save your CV and job description."),
   ).toBeVisible();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
-  fireEvent.click(screen.getByRole("button", { name: "Back to home" }));
+  fireEvent.click(screen.getByRole("link", { name: "Back to home" }));
   expect(screen.getByLabelText("Paste your CV text")).toHaveValue("Ada CV");
   expect(screen.getByLabelText("Job description")).toHaveValue(
     "Build software.",
