@@ -120,11 +120,6 @@ function cvFileError(file: File): string | null {
 const MAX_JOB_TITLE_LENGTH = 200;
 const MAX_JOB_COMPANY_LENGTH = 200;
 const MAX_JOB_DESCRIPTION_LENGTH = 20_000;
-const statusText: Record<ConnectionStatus, string> = {
-  checking: "Checking API",
-  connected: "API connected",
-  unavailable: "API unavailable",
-};
 const requirementCategoryLabels: Record<RequirementCategory, string> = {
   matched_requirements: "Matched requirement",
   possible_gaps: "Possible gap",
@@ -2889,11 +2884,7 @@ function App() {
             )}
           </ul>
         </nav>
-        {user && <p className="account-email">{user.email}</p>}
-        <div className={`api-status api-status--${status}`} role="status">
-          <span className="status-dot" aria-hidden="true" />
-          <span>{statusText[status]}</span>
-        </div>
+        {user && token && <p className="sidebar-identity">{user.email}</p>}
       </aside>
       {jobsVisited && token && user && (
         <Activity mode={view === "jobs" || view === "add-job"
