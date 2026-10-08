@@ -84,7 +84,7 @@ type JobHistoryCache = Map<number, {
   error: string | null;
 }>;
 type IconName =
-  | "grid" | "briefcase" | "document" | "arrows" | "login"
+  | "grid" | "briefcase" | "document" | "arrows" | "login" | "logout"
   | "plus" | "arrow-right";
 type DraftProps = {
   cvFile: File | null;
@@ -171,6 +171,12 @@ function Icon({ name }: { name: IconName }): ReactNode {
       <>
         <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
         <path d="M10 17l5-5-5-5M15 12H4" />
+      </>
+    ),
+    logout: (
+      <>
+        <path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4" />
+        <path d="M16 7l5 5-5 5M21 12H10" />
       </>
     ),
   };
@@ -2865,6 +2871,7 @@ function App() {
             {user && token ? (
               <li>
                 <button type="button" className="nav-button" onClick={logout}>
+                  <Icon name="logout" />
                   Log out
                 </button>
               </li>
