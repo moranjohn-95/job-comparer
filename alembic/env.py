@@ -39,7 +39,10 @@ def run_migrations_online() -> None:
     try:
         with engine.connect() as connection:
             if is_test:
-                assert_test_connection(connection)
+                # Finish the guard's read transaction before Alembic owns
+                # the migration transaction, otherwise upgrades roll back.
+                with connection.begin():
+                    assert_test_connection(connection)
             context.configure(
                 connection=connection, target_metadata=target_metadata
             )
