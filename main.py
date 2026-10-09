@@ -1,10 +1,8 @@
 import ipaddress
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
-
-import jwt
 
 from fastapi import (
     Depends,
@@ -17,7 +15,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -25,11 +23,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from auth import (
-    create_access_token,
-    decode_access_token,
     hash_password,
     verify_password,
 )
+from auth_http import get_auth_settings
+from auth_sessions import create_session, resolve_session, revoke_session
 from ai_usage import (
     UsageConfigurationError,
     UsageLimitReached,
@@ -63,15 +61,44 @@ from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
 from models import ComparisonHistory, SavedCV, SavedJob, User
 
+auth_settings = get_auth_settings()
 app = FastAPI()
+
+
+@app.exception_handler(Exception)
+async def private_server_error(request: Request, error: Exception):
+    return JSONResponse(
+        {"detail": "The request could not be completed. Please retry."},
+        status_code=500,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@app.middleware("http")
+async def protect_browser_requests(request: Request, call_next):
+    if request.method not in {"GET", "HEAD", "OPTIONS"} and (
+        request.headers.get("X-CSRF-Protection") != "1"
+        or request.headers.get("Origin") not in auth_settings.origins
+    ):
+        response = JSONResponse(
+            {"detail": "Request origin or protection header is invalid"},
+            status_code=403,
+        )
+    else:
+        response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173"],
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_origins=list(auth_settings.origins),
+    allow_credentials=True,
+    allow_methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "X-CSRF-Protection"],
     expose_headers=["X-Comparison-Id"],
 )
-bearer = HTTPBearer(auto_error=False)
 MAX_CV_LENGTH = 50_000
 MAX_JOB_TITLE_LENGTH = 200
 MAX_JOB_COMPANY_LENGTH = 200
@@ -94,11 +121,6 @@ class UserPublic(BaseModel):
 
     id: int
     email: EmailStr
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
 
 
 class CVInput(BaseModel):
@@ -192,7 +214,6 @@ def invalid_credentials() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid email or password",
-        headers={"WWW-Authenticate": "Bearer"},
     )
 
 
@@ -232,31 +253,18 @@ def client_ip(request: Request) -> str:
 
 
 def current_user(
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    request: Request,
     session: Session = Depends(get_session),
 ) -> User:
-    if credentials is None:
+    resolved = resolve_session(
+        session, request.cookies.get(auth_settings.cookie_name)
+    )
+    if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
-            headers={"WWW-Authenticate": "Bearer"},
         )
-    try:
-        user_id = decode_access_token(credentials.credentials)
-    except (jwt.InvalidTokenError, KeyError, TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        ) from None
-    user = session.get(User, user_id)
-    if user is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    return user
+    return resolved[1]
 
 
 @app.get("/health")
@@ -299,12 +307,13 @@ def signup(
     return user
 
 
-@app.post("/login", response_model=TokenResponse)
+@app.post("/login", response_model=UserPublic)
 def login(
     payload: LoginRequest,
     request: Request,
+    response: Response,
     session: Session = Depends(get_session),
-) -> TokenResponse:
+) -> User:
     try:
         reserve_auth_attempts(
             session,
@@ -330,7 +339,27 @@ def login(
         payload.password, user.password_hash
     ):
         raise invalid_credentials()
-    return TokenResponse(access_token=create_access_token(user.id))
+    token = create_session(session, user.id)
+    saved_session, _ = resolve_session(session, token)
+    expires_at = saved_session.expires_at.astimezone(timezone.utc)
+    session.commit()
+    response.set_cookie(
+        auth_settings.cookie_name, token, expires=expires_at,
+        **auth_settings.cookie_options,
+    )
+    return user
+
+
+@app.post("/logout", status_code=204)
+def logout(
+    request: Request, response: Response,
+    session: Session = Depends(get_session),
+) -> None:
+    revoke_session(session, request.cookies.get(auth_settings.cookie_name))
+    session.commit()
+    response.delete_cookie(
+        auth_settings.cookie_name, **auth_settings.cookie_options
+    )
 
 
 @app.get("/me", response_model=UserPublic)

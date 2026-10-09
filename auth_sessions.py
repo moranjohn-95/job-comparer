@@ -1,4 +1,4 @@
-"""Database-backed sessions, not yet wired to the HTTP authentication layer.
+"""Database-backed sessions used by the HTTP authentication layer.
 
 Callers own the SQLAlchemy transaction: helpers may flush, but never commit
 or roll back. Commit issuance before delivering its raw token. Password

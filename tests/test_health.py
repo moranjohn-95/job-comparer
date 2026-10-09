@@ -34,12 +34,15 @@ def test_cors_allows_authenticated_cv_save_requests() -> None:
         headers={
             "Origin": "http://127.0.0.1:5173",
             "Access-Control-Request-Method": "PUT",
-            "Access-Control-Request-Headers": "authorization,content-type",
+            "Access-Control-Request-Headers": (
+                "x-csrf-protection,content-type"
+            ),
         },
     )
 
     assert response.status_code == 200
     assert "PUT" in response.headers["access-control-allow-methods"]
-    assert "authorization" in response.headers[
+    assert response.headers["access-control-allow-credentials"] == "true"
+    assert "x-csrf-protection" in response.headers[
         "access-control-allow-headers"
     ].lower()

@@ -9,9 +9,99 @@ import {
 } from "@testing-library/react";
 import App from "./App";
 
+// Most existing journeys begin signed out. Keep their endpoint mocks intact
+// while modelling the new initial /me request explicitly.
+async function renderSignedOutApp() {
+  const configuredFetch = globalThis.fetch;
+  let initialMe = true;
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.credentials).toBe("include");
+    const headers = new Headers(init?.headers);
+    expect(headers.has("Authorization")).toBe(false);
+    if (!["GET", "HEAD", "OPTIONS"].includes(init?.method ?? "GET")) {
+      expect(headers.get("X-CSRF-Protection")).toBe("1");
+      if (init?.body instanceof FormData) expect(headers.has("Content-Type")).toBe(false);
+    }
+    if (String(input).endsWith("/me") && initialMe) {
+      initialMe = false;
+      return Promise.resolve(new Response(null, { status: 401 }));
+    }
+    return configuredFetch(input, init);
+  });
+  render(<App />);
+  await waitFor(() => expect(screen.queryByText("Checking your session…")).not.toBeInTheDocument());
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+});
+
+test("restores the cookie session on startup without replaying mutations", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(
+    String(input).endsWith("/jobs")
+      ? { ok: true, json: async () => [] }
+      : savedDraftResponse(String(input)),
+  ));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<App />);
+  expect(screen.getByRole("status")).toHaveTextContent("Checking your session");
+  expect(await screen.findByText("ada@example.com")).toBeVisible();
+  expect(await screen.findByRole("heading", { name: "Start a comparison" })).toBeVisible();
+  expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/login"))).toBe(false);
+  for (const [, init] of vi.mocked(globalThis.fetch).mock.calls) {
+    expect(init?.credentials).toBe("include");
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(new Headers(init?.headers).has("Authorization")).toBe(false);
+  }
+});
+
+test.each(["network", "server"])("retries an initial %s session error", async (failure) => {
+  let attempts = 0;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    if (String(input).endsWith("/me") && ++attempts === 1) {
+      return failure === "network" ? Promise.reject(new TypeError("Network error"))
+        : Promise.resolve(new Response(null, { status: 503 }));
+    }
+    return Promise.resolve(String(input).endsWith("/jobs")
+      ? { ok: true, json: async () => [] } : savedDraftResponse(String(input)));
+  }));
+  render(<App />);
+  expect(await screen.findByRole("alert")).toHaveTextContent("Unable to check your session");
+  expect(screen.queryByRole("button", { name: "Log in" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Retry session" }));
+  expect(await screen.findByText("ada@example.com")).toBeVisible();
+  expect(attempts).toBe(2);
+});
+
+test("clears an expired session and never replays its draft after login", async () => {
+  let jobReads = 0;
+  const writes: string[] = [];
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method && init.method !== "GET") writes.push(`${init.method} ${url}`);
+    if (url.endsWith("/jobs")) {
+      jobReads += 1;
+      return Promise.resolve(jobReads === 2
+        ? new Response(null, { status: 401 }) : { ok: true, json: async () => [] });
+    }
+    if (url.endsWith("/cv")) return Promise.resolve(new Response(null, { status: 404 }));
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await renderSignedOutApp();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Start a comparison" });
+  fireEvent.change(screen.getByLabelText("Job title"), { target: { value: "Private draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Your session has expired");
+  expect(screen.queryByText("ada@example.com")).not.toBeInTheDocument();
+  expect(screen.queryByDisplayValue("Private draft")).not.toBeInTheDocument();
+  enterLogin();
+  await screen.findByRole("heading", { name: "Start a comparison" });
+  expect(screen.getByLabelText("Job title")).toHaveValue("");
+  expect(writes).toEqual(["POST /api/login", "POST /api/login"]);
 });
 
 test("shows a connected status for a healthy API response", async () => {
@@ -21,11 +111,11 @@ test("shows a connected status for a healthy API response", async () => {
   });
   vi.stubGlobal("fetch", fetchMock);
 
-  render(<App />);
+  await renderSignedOutApp();
 
   await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
   expect(fetchMock).toHaveBeenCalledWith(
-    "http://127.0.0.1:8001/health",
+    "/api/health",
     expect.objectContaining({ signal: expect.any(AbortSignal) }),
   );
 });
@@ -39,14 +129,14 @@ test("shows an unavailable status for an unexpected health response", async () =
     }),
   );
 
-  render(<App />);
+  await renderSignedOutApp();
 
   expect(
     await screen.findByRole("button", { name: "Retry connection" }),
   ).toBeVisible();
   expect(
     screen.getByText(
-      "Start the FastAPI server at http://127.0.0.1:8001, then try again.",
+      "Unable to reach the API. Please try again.",
     ),
   ).toBeVisible();
 });
@@ -61,7 +151,7 @@ test("treats an HTTP error as unavailable without reading its body", async () =>
     }),
   );
 
-  render(<App />);
+  await renderSignedOutApp();
 
   await screen.findByRole("button", { name: "Retry connection" });
   expect(readBody).not.toHaveBeenCalled();
@@ -77,32 +167,32 @@ test("can retry after a network failure", async () => {
     });
   vi.stubGlobal("fetch", fetchMock);
 
-  render(<App />);
+  await renderSignedOutApp();
   await screen.findByRole("button", { name: "Retry connection" });
   fireEvent.click(screen.getByRole("button", { name: "Retry connection" }));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 });
 
-test("opens the login view from the public home navigation", () => {
+test("opens the login view from the public home navigation", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   expect(screen.getByRole("heading", { name: "Log in" })).toBeVisible();
 });
 
-test("shows a selected PDF filename locally", () => {
+test("shows a selected PDF filename locally", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   const file = new File(["cv"], "ada-lovelace.pdf", {
     type: "application/pdf",
@@ -116,14 +206,14 @@ test("shows a selected PDF filename locally", () => {
   );
 });
 
-test("rejects an invalid CV file locally", () => {
+test("rejects an invalid CV file locally", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   const file = new File(["cv"], "notes.txt", { type: "text/plain" });
   fireEvent.change(screen.getByLabelText("Choose a file"), {
@@ -135,14 +225,14 @@ test("rejects an invalid CV file locally", () => {
   );
 });
 
-test("shows locally pasted CV text state", () => {
+test("shows locally pasted CV text state", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   fireEvent.change(screen.getByLabelText("Paste your CV text"), {
     target: { value: "Experienced software engineer." },
@@ -153,14 +243,14 @@ test("shows locally pasted CV text state", () => {
   );
 });
 
-test("keeps an entered job description in the local draft", () => {
+test("keeps an entered job description in the local draft", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   fireEvent.change(screen.getByLabelText("Job description"), {
     target: { value: "Build reliable APIs and work with product teams." },
@@ -171,14 +261,14 @@ test("keeps an entered job description in the local draft", () => {
   );
 });
 
-test("requires a CV, job details, and job description before opening signup", () => {
+test("requires a CV, job details, and job description before opening signup", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -199,14 +289,14 @@ test("requires a CV, job details, and job description before opening signup", ()
   ).not.toBeInTheDocument();
 });
 
-test("rejects job details longer than the backend limits", () => {
+test("rejects job details longer than the backend limits", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   fireEvent.change(screen.getByLabelText("Paste your CV text"), {
     target: { value: "Ada CV" },
@@ -230,14 +320,14 @@ test("rejects job details longer than the backend limits", () => {
   ).not.toBeInTheDocument();
 });
 
-test("asks which CV to use and preserves the draft through signup and login", () => {
+test("asks which CV to use and preserves the draft through signup and login", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
 
   const file = new File(["cv"], "ada-lovelace.pdf", {
     type: "application/pdf",
@@ -281,14 +371,14 @@ test("asks which CV to use and preserves the draft through signup and login", ()
   expect(screen.getByText("Selected: ada-lovelace.pdf")).toBeVisible();
 });
 
-test("opens signup from the home hero and can return to login", () => {
+test("opens signup from the home hero and can return to login", async () => {
   vi.stubGlobal(
     "fetch",
     vi
       .fn()
       .mockResolvedValue({ ok: true, json: async () => ({ status: "ok" }) }),
   );
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Sign up to compare" }));
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   expect(screen.getByLabelText("Email address")).toBeVisible();
@@ -307,7 +397,7 @@ test("shows signup validation and duplicate-email errors", async () => {
     });
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Sign up to compare" }));
   fireEvent.change(screen.getByLabelText("Email address"), {
     target: { value: "ada@example.com" },
@@ -347,7 +437,7 @@ test("returns to login after successful signup", async () => {
       }),
     ),
   );
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Sign up to compare" }));
   fireEvent.change(screen.getByLabelText("Email address"), {
     target: { value: "ada@example.com" },
@@ -377,7 +467,7 @@ test("shows an error when login credentials are rejected", async () => {
       });
     }),
   );
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   fireEvent.change(screen.getByLabelText("Email address"), {
     target: { value: "ada@example.com" },
@@ -401,10 +491,10 @@ test("returns to the dashboard with the account email after login", async () => 
     if (String(input).endsWith("/login"))
       return Promise.resolve({
         ok: true,
-        json: async () => ({ access_token: "token-123" }),
+        json: async () => ({ id: 1, email: "ada@example.com" }),
       });
     expect(init).toMatchObject({
-      headers: { Authorization: "Bearer token-123" },
+      credentials: "include", headers: expect.any(Headers),
     });
     return Promise.resolve({
       ok: true,
@@ -412,7 +502,7 @@ test("returns to the dashboard with the account email after login", async () => 
     });
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   fireEvent.change(screen.getByLabelText("Email address"), {
     target: { value: "ada@example.com" },
@@ -425,10 +515,15 @@ test("returns to the dashboard with the account email after login", async () => 
   expect(screen.getByRole("button", { name: "Log out" })).toBeVisible();
 });
 
-test("logs out and restores the sidebar login action", async () => {
+test("retries server logout before clearing the signed-in account", async () => {
+  let logoutAttempts = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) => {
+      if (String(input).endsWith("/logout")) {
+        logoutAttempts += 1;
+        return Promise.resolve(new Response(null, { status: logoutAttempts === 1 ? 503 : 204 }));
+      }
       if (String(input).endsWith("/health"))
         return Promise.resolve({
           ok: true,
@@ -437,7 +532,7 @@ test("logs out and restores the sidebar login action", async () => {
       if (String(input).endsWith("/login"))
         return Promise.resolve({
           ok: true,
-          json: async () => ({ access_token: "token-123" }),
+          json: async () => ({ id: 1, email: "ada@example.com" }),
         });
       return Promise.resolve({
         ok: true,
@@ -445,7 +540,7 @@ test("logs out and restores the sidebar login action", async () => {
       });
     }),
   );
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   fireEvent.change(screen.getByLabelText("Email address"), {
     target: { value: "ada@example.com" },
@@ -455,7 +550,11 @@ test("logs out and restores the sidebar login action", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   fireEvent.click(await screen.findByRole("button", { name: "Log out" }));
-  expect(screen.getByRole("button", { name: "Log in" })).toBeVisible();
+  expect(await screen.findByText("Could not log out on the server. Please retry.")).toBeVisible();
+  expect(screen.getByText("ada@example.com")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Retry logout" }));
+  expect(await screen.findByRole("button", { name: "Log in" })).toBeVisible();
+  expect(logoutAttempts).toBe(2);
   expect(screen.queryByText("ada@example.com")).not.toBeInTheDocument();
 });
 
@@ -492,21 +591,21 @@ test("saves a valid text draft after login, without comparing it", async () => {
       return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
     }
     if (url.endsWith("/login")) {
-      return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+      return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
     }
     if (url.endsWith("/me")) {
       return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
     }
     if (url.endsWith("/cv")) {
-      expect(init).toMatchObject({ method: "PUT", headers: expect.objectContaining({ Authorization: "Bearer token" }) });
+      expect(init).toMatchObject({ method: "PUT", credentials: "include", headers: expect.any(Headers) });
       return Promise.resolve({ ok: true, json: async () => ({ text: "Ada CV" }) });
     }
     expect(url).toMatch(/\/jobs$/);
-    expect(init).toMatchObject({ method: "POST", headers: expect.objectContaining({ Authorization: "Bearer token" }) });
+    expect(init).toMatchObject({ method: "POST", credentials: "include", headers: expect.any(Headers) });
     return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Software Engineer", company_name: "Analytical Engines" }) });
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   completeTextDraft();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
@@ -521,7 +620,7 @@ test("uploads a selected CV file before saving the job", async () => {
     const url = String(input);
     calls.push(url);
     if (url.endsWith("/health")) return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
-    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
     if (url.endsWith("/me")) return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
     if (url.endsWith("/cv/upload")) {
       expect(init?.body).toBeInstanceOf(FormData);
@@ -529,7 +628,7 @@ test("uploads a selected CV file before saving the job", async () => {
     }
     return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Engineer", company_name: "Engines" }) });
   }));
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.change(screen.getByLabelText("Choose a file"), {
     target: { files: [new File(["cv"], "ada.pdf", { type: "application/pdf" })] },
   });
@@ -553,14 +652,14 @@ test("retries a failed job save without uploading the CV again", async () => {
       return Promise.resolve({ ok: true, json: async () => [] });
     }
     if (url.endsWith("/health")) return Promise.resolve({ ok: true, json: async () => ({ status: "ok" }) });
-    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ access_token: "token" }) });
+    if (url.endsWith("/login")) return Promise.resolve({ ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) });
     if (url.endsWith("/me") || url.endsWith("/cv")) return Promise.resolve({ ok: true, json: async () => url.endsWith("/me") ? ({ id: 1, email: "ada@example.com" }) : ({ text: "Ada CV" }) });
     jobAttempts += 1;
     if (jobAttempts === 1) return Promise.resolve({ ok: false, json: async () => ({ detail: "Job save failed" }) });
     return Promise.resolve({ ok: true, json: async () => ({ id: 2, title: "Software Engineer", company_name: "Analytical Engines" }) });
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   completeTextDraft();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
@@ -603,13 +702,13 @@ function mockEmptyDashboard(options: {
   let comparedJob: typeof job | null = null;
   const writes: string[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const path = new URL(String(input)).pathname;
+    const path = new URL(String(input), "http://localhost").pathname.replace(/^\/api/, "");
     const method = init?.method ?? "GET";
     const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
     const fail = (detail: string) => ({ ok: false, status: 503, json: async () => ({ detail }) });
     if (path === "/health") return ok({ status: "ok" });
-    if (path === "/login") return ok({ access_token: "token" });
-    expect(init?.headers).toMatchObject({ Authorization: "Bearer token" });
+    if (path === "/login") return ok({ id: 1, email: "ada@example.com" });
+    expect(init?.credentials).toBe("include");
     if (path === "/me") return ok({ id: 1, email: "ada@example.com" });
     if (method !== "GET") writes.push(`${method} ${path}`);
     if (path === "/jobs" && method === "POST") {
@@ -669,7 +768,7 @@ function mockEmptyDashboard(options: {
 }
 
 async function openEmptyDashboard() {
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
   await screen.findByRole("heading", { name: "Start a comparison" });
@@ -706,8 +805,8 @@ test("empty Dashboard opens the exact saved comparison and refreshes sidebar scr
   expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
   expect(await screen.findByRole("button", { name: "TypeScript" })).toBeVisible();
   expect(fetchMock).toHaveBeenCalledWith(
-    "http://127.0.0.1:8001/jobs/73/comparisons/91",
-    expect.objectContaining({ method: "GET", headers: { Authorization: "Bearer token" } }),
+    "/api/jobs/73/comparisons/91",
+    expect.objectContaining({ method: "GET", credentials: "include", headers: expect.any(Headers) }),
   );
   expect(screen.getByRole("button", { name: "Comparisons" })).toHaveAttribute("aria-current", "page");
   expect(writes).toEqual(["POST /jobs", "PUT /cv", "POST /jobs/73/compare"]);
@@ -838,7 +937,7 @@ function savedDraftResponse(url: string) {
     return { ok: true, json: async () => ({ status: "ok" }) };
   }
   if (url.endsWith("/login")) {
-    return { ok: true, json: async () => ({ access_token: "token" }) };
+    return { ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) };
   }
   if (url.endsWith("/me")) {
     return { ok: true, json: async () => ({ id: 1, email: "ada@example.com" }) };
@@ -891,7 +990,7 @@ test("shows evidence-based comparison results only after Compare is clicked", as
       comparisonCount += 1;
       expect(init).toMatchObject({
         method: "POST",
-        headers: { Authorization: "Bearer token" },
+        credentials: "include", headers: expect.any(Headers),
       });
       const result = {
         ...comparisonResult,
@@ -909,7 +1008,7 @@ test("shows evidence-based comparison results only after Compare is clicked", as
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   await saveTextDraftAndLogIn();
   expect(screen.queryByRole("heading", { name: "Saved comparison" })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Compare" }));
@@ -974,7 +1073,7 @@ test("disables Compare while a comparison request is running", async () => {
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   await saveTextDraftAndLogIn();
   const button = screen.getByRole("button", { name: "Compare" });
   fireEvent.click(button);
@@ -1011,7 +1110,7 @@ test("shows comparison API errors without retrying or saving another draft", asy
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   await saveTextDraftAndLogIn();
   fireEvent.click(screen.getByRole("button", { name: "Compare" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -1032,7 +1131,7 @@ test("loads Jobs in API order and retries errors including expired auth", async 
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     if (String(input).endsWith("/jobs/9")) {
       expect(init).toMatchObject({
-        method: "GET", headers: { Authorization: "Bearer token" },
+        method: "GET", credentials: "include", headers: expect.any(Headers),
       });
       detailAttempts += 1;
       return Promise.resolve(detailAttempts === 1
@@ -1042,7 +1141,7 @@ test("loads Jobs in API order and retries errors including expired auth", async 
           : { ok: true, json: async () => ({ ...jobs[0], description }) });
     }
     if (String(input).endsWith("/jobs") && init?.method === "GET") {
-      expect(init.headers).toEqual({ Authorization: "Bearer token" });
+      expect(init.credentials).toBe("include");
       attempts += 1;
       // The first read belongs to the Dashboard overview.
       if (attempts === 1) return Promise.resolve({ ok: true, json: async () => [] });
@@ -1053,7 +1152,7 @@ test("loads Jobs in API order and retries errors including expired auth", async 
     return Promise.resolve(savedDraftResponse(String(input)));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
   await screen.findByRole("heading", { name: "Dashboard" });
@@ -1109,7 +1208,7 @@ test("discards the homepage handoff and pending Jobs response after another logi
     if (String(input).endsWith("/login")) {
       account += 1;
       return Promise.resolve({
-        ok: true, json: async () => ({ access_token: `token-${account}` }),
+        ok: true, json: async () => ({ id: account, email: `user-${account}@example.com` }),
       });
     }
     if (String(input).endsWith("/me")) {
@@ -1128,12 +1227,12 @@ test("discards the homepage handoff and pending Jobs response after another logi
     return Promise.resolve(savedDraftResponse(String(input)));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   await saveTextDraftAndLogIn();
   await waitFor(() => expect(jobsSignal).toBeDefined());
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
   fireEvent.click(screen.getByRole("button", { name: "Log out" }));
-  expect(jobsSignal?.aborted).toBe(true);
+  await waitFor(() => expect(jobsSignal?.aborted).toBe(true));
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
   await screen.findByRole("heading", { name: "Dashboard" });
@@ -1141,12 +1240,13 @@ test("discards the homepage handoff and pending Jobs response after another logi
   expect(screen.queryByText("Job saved")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Job title")).toHaveValue("");
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
-  resolveJobs({ ok: true, json: async () => [
+  resolveJobs({ ok: false, status: 401, json: async () => [
     { id: 1, title: "Previous account job", company_name: "Previous company" },
   ] });
   expect(await screen.findByText("You have no saved jobs yet."))
     .toBeVisible();
   expect(screen.queryByText("Previous account job")).not.toBeInTheDocument();
+  expect(screen.getByText("user2@example.com")).toBeVisible();
 });
 
 test("discards stale job details when switching Jobs or logging out", async () => {
@@ -1173,7 +1273,7 @@ test("discards stale job details when switching Jobs or logging out", async () =
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   fireEvent.click(screen.getByRole("button", { name: "Log in" }));
   enterLogin();
   await screen.findByRole("heading", { name: "Dashboard" });
@@ -1188,7 +1288,7 @@ test("discards stale job details when switching Jobs or logging out", async () =
   fireEvent.click(screen.getByRole("button", { name: "Back to jobs" }));
   fireEvent.click(screen.getByRole("button", { name: /View job: Researcher/ }));
   fireEvent.click(screen.getByRole("button", { name: "Log out" }));
-  expect(signal?.aborted).toBe(true);
+  await waitFor(() => expect(signal?.aborted).toBe(true));
   finish({ ok: true, json: async () => ({ ...jobs[0], description: "Stale job" }) });
   await waitFor(() => expect(screen.queryByText("Stale job"))
     .not.toBeInTheDocument());
@@ -1219,7 +1319,7 @@ test("opens saved comparison categories and returns without comparing", async ()
     return Promise.resolve(savedDraftResponse(url));
   });
   vi.stubGlobal("fetch", fetchMock);
-  render(<App />);
+  await renderSignedOutApp();
   await saveTextDraftAndLogIn();
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
   fireEvent.click(await screen.findByRole("button", { name: /View job:/ }));

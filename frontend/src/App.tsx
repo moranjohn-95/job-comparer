@@ -21,7 +21,9 @@ import {
   getComparisonSummaries,
   getSavedCv,
   signIn,
+  signOut,
   signUp,
+  resetSessionRequests,
   saveCvText,
   uploadCv,
   type CurrentUser,
@@ -722,7 +724,7 @@ function HomeView({
               Connection needed
             </p>
             <p>
-              Start the FastAPI server at http://127.0.0.1:8001, then try again.
+              Unable to reach the API. Please try again.
             </p>
             <button type="button" onClick={onRetry}>
               Retry connection
@@ -997,9 +999,9 @@ function ComparisonResults({ comparison, requirementSelection,
   );
 }
 
-function SavedComparisonHistory({ token, job, comparisonId, onSelect,
+function SavedComparisonHistory({ accountKey, job, comparisonId, onSelect,
   actions, historyCache, rowAction = false, backLabel = "Back to job" }: {
-  token: string;
+  accountKey: number;
   job: SavedJob;
   comparisonId: number | null;
   onSelect: (id: number | null) => void;
@@ -1042,8 +1044,8 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
         : Promise.resolve(cachedHistory.entries);
     } else {
       request = comparisonId === null
-        ? getSavedComparisons(token, job.id, controller.signal)
-        : getSavedComparison(token, job.id, comparisonId, controller.signal)
+        ? getSavedComparisons(job.id, controller.signal)
+        : getSavedComparison(job.id, comparisonId, controller.signal)
           .then((entry) => [entry]);
     }
     void request.then(
@@ -1080,7 +1082,7 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
       active = false;
       controller.abort();
     };
-  }, [token, job.id, comparisonId, attempt, historyVersion, currentResult,
+  }, [accountKey, job.id, comparisonId, attempt, historyVersion, currentResult,
     historyCache]);
 
   async function startComparison() {
@@ -1228,8 +1230,8 @@ function SavedComparisonHistory({ token, job, comparisonId, onSelect,
   );
 }
 
-function MyCvView({ token, visible, onSaved }: {
-  token: string;
+function MyCvView({ accountKey, visible, onSaved }: {
+  accountKey: number;
   visible: boolean;
   onSaved: () => void;
 }) {
@@ -1274,9 +1276,9 @@ function MyCvView({ token, visible, onSaved }: {
     try {
       let savedText = draft;
       if (inputMethod === "file" && file) {
-        savedText = await uploadCv(token, file, controller.signal);
+        savedText = await uploadCv(file, controller.signal);
       } else {
-        await saveCvText(token, draft, controller.signal);
+        await saveCvText(draft, controller.signal);
       }
       if (controller.signal.aborted) return;
       setText(savedText);
@@ -1299,7 +1301,7 @@ function MyCvView({ token, visible, onSaved }: {
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-    void getSavedCv(token, controller.signal).then(
+    void getSavedCv(controller.signal).then(
       (result) => {
         if (!active) return;
         setText(result);
@@ -1316,7 +1318,7 @@ function MyCvView({ token, visible, onSaved }: {
       active = false;
       controller.abort();
     };
-  }, [token, attempt]);
+  }, [accountKey, attempt]);
 
   return (
     <main
@@ -1515,9 +1517,8 @@ function MyCvView({ token, visible, onSaved }: {
 }
 
 
-function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
+function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
   unavailable, onCvSaved, onJobSaved, onCompare, onCompleted, onOpenComparisons }: {
-  token: string;
   jobs: SavedJob[];
   savedCv: string | null;
   preferredJobId: number | null;
@@ -1588,7 +1589,7 @@ function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
     try {
       if (!job) {
         setProgress("Saving your job details…");
-        job = await createJob(token, {
+        job = await createJob({
           title: jobTitle.trim(), company_name: companyName.trim(),
           description: jobDescription.trim(),
         }, controller.signal);
@@ -1601,8 +1602,8 @@ function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
       if (!hasCv) {
         setProgress("Saving your CV…");
         const text = cvFile && method !== "text"
-          ? await uploadCv(token, cvFile, controller.signal)
-          : (await saveCvText(token, cvText.trim(), controller.signal), cvText.trim());
+          ? await uploadCv(cvFile, controller.signal)
+          : (await saveCvText(cvText.trim(), controller.signal), cvText.trim());
         if (controller.signal.aborted) return;
         hasCv = true;
         setReplacingCv(false);
@@ -1702,9 +1703,9 @@ function DashboardComparisonFlow({ token, jobs, savedCv, preferredJobId,
   );
 }
 
-function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
+function DashboardOverview({ accountKey, onNavigate, onView, onCvSaved, onJobSaved,
   preferredJobId, refreshVersion, showFlow, onCompare, onCompleted, children }: {
-  token: string;
+  accountKey: number;
   onNavigate: (section: "my-cv" | "jobs" | "comparisons") => void;
   onView: (entry: ComparisonSummary) => void;
   onCvSaved: () => void;
@@ -1733,9 +1734,9 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
     const controller = new AbortController();
     let active = true;
     void Promise.all([
-      getSavedCv(token, controller.signal),
-      getJobs(token, controller.signal),
-      getComparisonSummaries(token, controller.signal),
+      getSavedCv(controller.signal),
+      getJobs(controller.signal),
+      getComparisonSummaries(controller.signal),
     ]).then(
       ([cv, jobs, comparisons]) => {
         if (!active) return;
@@ -1757,7 +1758,7 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
       active = false;
       controller.abort();
     };
-  }, [token, requestKey]);
+  }, [accountKey, requestKey]);
 
   const cards = [
     { section: "my-cv", icon: "document", label: "My CV",
@@ -1815,7 +1816,7 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
       {loading && <p role="status">Loading dashboard…</p>}
       {children}
       {data && <div hidden={!showFlow}><DashboardComparisonFlow
-        token={token} jobs={data.jobs} savedCv={data.cvText}
+        jobs={data.jobs} savedCv={data.cvText}
         preferredJobId={preferredJobId} unavailable={loading || error !== null}
         onCompare={onCompare} onCompleted={onCompleted}
         onOpenComparisons={() => onNavigate("comparisons")}
@@ -1881,8 +1882,8 @@ function DashboardOverview({ token, onNavigate, onView, onCvSaved, onJobSaved,
   );
 }
 
-function ComparisonsView({ token, historyCache }: {
-  token: string;
+function ComparisonsView({ accountKey, historyCache }: {
+  accountKey: number;
   historyCache: JobHistoryCache;
 }) {
   const [entries, setEntries] = useState<ComparisonSummary[]>([]);
@@ -1895,7 +1896,7 @@ function ComparisonsView({ token, historyCache }: {
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-    void getComparisonSummaries(token, controller.signal).then(
+    void getComparisonSummaries(controller.signal).then(
       (result) => {
         if (!active) return;
         setEntries(result);
@@ -1912,12 +1913,12 @@ function ComparisonsView({ token, historyCache }: {
       active = false;
       controller.abort();
     };
-  }, [token, attempt]);
+  }, [accountKey, attempt]);
 
   if (selected) return (
     <SavedComparisonHistory
       key={selected.id}
-      token={token}
+      accountKey={accountKey}
       job={{
         id: selected.job_id, title: selected.job_title,
         company_name: selected.company_name,
@@ -2053,10 +2054,10 @@ function ComparisonsView({ token, historyCache }: {
   );
 }
 
-function JobDetailsView({ token, jobId, onBack,
+function JobDetailsView({ accountKey, jobId, onBack,
   comparisonId, onSelectComparison, successMessage, comparisonActions,
   historyCache }: {
-  token: string;
+  accountKey: number;
   jobId: number;
   onBack: () => void;
   comparisonId: number | null;
@@ -2073,7 +2074,7 @@ function JobDetailsView({ token, jobId, onBack,
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-    void getJob(token, jobId, controller.signal).then(
+    void getJob(jobId, controller.signal).then(
       (result) => {
         if (!active) return;
         setJob(result);
@@ -2091,13 +2092,13 @@ function JobDetailsView({ token, jobId, onBack,
       active = false;
       controller.abort();
     };
-  }, [token, jobId, attempt]);
+  }, [accountKey, jobId, attempt]);
 
   if (job && (comparisonId !== null || comparisonActions.currentResult)) {
     return (
       <SavedComparisonHistory
         key={comparisonId ?? "current"}
-        token={token}
+        accountKey={accountKey}
         job={job}
         comparisonId={comparisonId}
         onSelect={onSelectComparison}
@@ -2141,7 +2142,7 @@ function JobDetailsView({ token, jobId, onBack,
       ) : (
         <div className="job-detail-layout">
           <SavedComparisonHistory
-            token={token}
+            accountKey={accountKey}
             job={job}
             comparisonId={null}
             onSelect={onSelectComparison}
@@ -2166,8 +2167,7 @@ function JobDetailsView({ token, jobId, onBack,
   );
 }
 
-function AddJobForm({ token, onCancel, onSaved }: {
-  token: string;
+function AddJobForm({ onCancel, onSaved }: {
   onCancel: () => void;
   onSaved: (job: SavedJob) => void;
 }) {
@@ -2203,7 +2203,7 @@ function AddJobForm({ token, onCancel, onSaved }: {
     setSaving(true);
     setError(null);
     try {
-      const job = await createJob(token, {
+      const job = await createJob({
         title: title.trim(), company_name: company.trim(), description,
       }, controller.signal);
       if (!controller.signal.aborted) onSaved(job);
@@ -2283,10 +2283,10 @@ function AddJobForm({ token, onCancel, onSaved }: {
   );
 }
 
-function JobsView({ token, selectedJobId, onSelectJob,
+function JobsView({ accountKey, selectedJobId, onSelectJob,
   comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs,
   comparisonActions, comparisonRuns, historyCache, onJobSaved }: {
-  token: string;
+  accountKey: number;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
   comparisonId: number | null;
@@ -2309,7 +2309,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
   useEffect(() => {
     const controller = new AbortController();
     let active = true;
-    void getJobs(token, controller.signal).then(
+    void getJobs(controller.signal).then(
       (result) => {
         if (!active) return;
         setJobs(result);
@@ -2327,12 +2327,11 @@ function JobsView({ token, selectedJobId, onSelectJob,
       active = false;
       controller.abort();
     };
-  }, [token, attempt]);
+  }, [accountKey, attempt]);
 
   if (addingJob) {
     return (
       <AddJobForm
-        token={token}
         onCancel={onShowJobs}
         onSaved={(job) => {
           onJobSaved();
@@ -2354,7 +2353,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
     return (
       <SavedComparisonHistory
         key={`${selectedJob.id}:${comparisonId ?? "current"}`}
-        token={token}
+        accountKey={accountKey}
         job={selectedJob}
         comparisonId={comparisonId}
         actions={comparisonActions}
@@ -2372,7 +2371,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
     return (
       <JobDetailsView
         key={selectedJobId}
-        token={token}
+        accountKey={accountKey}
         jobId={selectedJobId}
         onBack={() => {
           setCreatedJobId(null);
@@ -2449,7 +2448,7 @@ function JobsView({ token, selectedJobId, onSelectJob,
                     View job
                   </button>
                   <SavedComparisonHistory
-                    token={token}
+                    accountKey={accountKey}
                     job={job}
                     comparisonId={null}
                     historyCache={historyCache}
@@ -2484,8 +2483,15 @@ function App() {
   const [checkNumber, setCheckNumber] = useState(0);
   const [view, setView] = useState<View>("home");
   const [publicPage, setPublicPage] = useState<PublicPage | null>(currentPublicPage);
-  const [token, setToken] = useState<string | null>(null);
+  const [accountKey, setAccountKey] = useState<number | null>(null);
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authAttempt, setAuthAttempt] = useState(0);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const authRequest = useRef(0);
+  const logoutPending = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [cvFile, setCvFile] = useState<File | null>(null);
@@ -2537,12 +2543,12 @@ function App() {
       const previousView: unknown = event.state?.jobComparerView;
       if (typeof previousView === "string" && appViews.includes(previousView as View)) {
         const requiresSession = !["home", "login", "signup"].includes(previousView);
-        setView(requiresSession && (!token || !user) ? "home" : previousView as View);
+        setView(requiresSession && (!accountKey || !user) ? "home" : previousView as View);
       }
     }
     window.addEventListener("popstate", restorePublicNavigation);
     return () => window.removeEventListener("popstate", restorePublicNavigation);
-  }, [token, user]);
+  }, [accountKey, user]);
 
   useEffect(() => {
     if (publicPage) document.getElementById("public-page-heading")?.focus();
@@ -2563,10 +2569,10 @@ function App() {
   }
   const pageFrameProps = {
     publicPage,
-    signedIn: Boolean(token && user),
+    signedIn: Boolean(accountKey && user),
     onNavigate: openPublicPage,
     onReturn: () => {
-      const nextView = token && user ? "dashboard" : "home";
+      const nextView = accountKey && user ? "dashboard" : "home";
       leavePublicPage(nextView);
       setView(nextView);
     },
@@ -2607,6 +2613,36 @@ function App() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const request = ++authRequest.current;
+    resetSessionRequests();
+    void getCurrentUser(controller.signal).then((currentUser) => {
+      if (controller.signal.aborted || request !== authRequest.current) return;
+      setUser(currentUser);
+      setAccountKey(request);
+      setView("dashboard");
+      setAuthLoading(false);
+    }, (caught: unknown) => {
+      if (controller.signal.aborted || request !== authRequest.current) return;
+      if (!(caught instanceof ApiError && caught.status === 401)) {
+        setAuthError("Unable to check your session. Please retry.");
+      }
+      setAuthLoading(false);
+    });
+    return () => { controller.abort(); resetSessionRequests(); };
+  }, [authAttempt]);
+
+  useEffect(() => {
+    function expired() {
+      clearPrivateSession();
+      setError("Your session has expired. Please log in again.");
+      setView("login");
+    }
+    window.addEventListener("session-expired", expired);
+    return () => window.removeEventListener("session-expired", expired);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
     let active = true;
     void checkHealth(controller.signal).then((healthy) => {
       if (active) setStatus(healthy ? "connected" : "unavailable");
@@ -2617,32 +2653,37 @@ function App() {
     };
   }, [checkNumber]);
   async function handleLogin(email: string, password: string) {
+    if (isSubmitting) return;
+    const request = ++authRequest.current;
+    resetSessionRequests();
     setError(null);
     setIsSubmitting(true);
     try {
-      const nextToken = await signIn(email, password);
-      const nextUser = await getCurrentUser(nextToken);
+      await signIn(email, password);
+      const nextUser = await getCurrentUser();
+      if (request !== authRequest.current) return;
       clearComparisonRequests();
-      setToken(nextToken);
+      setAccountKey(request);
       setUser(nextUser);
       setSelectedJobId(null);
       setSavedComparisonId(null);
       if (isSavingDraft) {
-        await saveAuthenticatedDraft(nextToken);
+        await saveAuthenticatedDraft();
       } else {
         setView("dashboard");
       }
     } catch (caught) {
+      if (request !== authRequest.current) return;
       setError(
         caught instanceof ApiError
           ? caught.message
           : "Unable to sign in. Please try again.",
       );
     } finally {
-      setIsSubmitting(false);
+      if (request === authRequest.current) setIsSubmitting(false);
     }
   }
-  async function saveAuthenticatedDraft(authToken: string) {
+  async function saveAuthenticatedDraft() {
     if (handoffRequest.current) return;
     const controller = new AbortController();
     handoffRequest.current = controller;
@@ -2652,14 +2693,14 @@ function App() {
     try {
       if (saveStage === "cv") {
         if (cvFile && selectedInputMethod !== "text") {
-          await uploadCv(authToken, cvFile, controller.signal);
+          await uploadCv(cvFile, controller.signal);
         } else {
-          await saveCvText(authToken, cvText.trim(), controller.signal);
+          await saveCvText(cvText.trim(), controller.signal);
         }
         if (controller.signal.aborted) return;
         setSaveStage("job");
       }
-      const job = await createJob(authToken, {
+      const job = await createJob({
         title: jobTitle.trim(),
         company_name: companyName.trim(),
         description: jobDescription.trim(),
@@ -2690,15 +2731,15 @@ function App() {
     }
   }
   function retrySave() {
-    if (token && saveStage !== "complete") {
-      void saveAuthenticatedDraft(token);
+    if (accountKey && saveStage !== "complete") {
+      void saveAuthenticatedDraft();
     }
   }
   async function requestComparison(
     jobId: number,
   ): Promise<ComparisonOutcome | null> {
     const requests = comparisonRequests.current;
-    if (!token || requests.has(jobId)) return null;
+    if (!accountKey || requests.has(jobId)) return null;
     requests.add(jobId);
     const sourceVersion = cvVersion.current;
     setComparisonRuns((current) => ({
@@ -2711,7 +2752,7 @@ function App() {
       },
     }));
     try {
-      const { result, comparisonId } = await compareJob(token, jobId);
+      const { result, comparisonId } = await compareJob(jobId);
       if (comparisonRequests.current !== requests) return null;
       setOverviewVersion((value) => value + 1);
       setComparisonRuns((current) => ({
@@ -2821,7 +2862,7 @@ function App() {
     setView("dashboard");
   }
   function showJobs() {
-    if (!token || !user) return openLogin();
+    if (!accountKey || !user) return openLogin();
     leavePublicPage(view === "jobs" || view === "add-job" ? "jobs" : jobsScreen);
     if (view === "jobs" || view === "add-job") {
       setSelectedJobId(null);
@@ -2835,13 +2876,13 @@ function App() {
     setJobsVisited(true);
   }
   function showCv() {
-    if (!token || !user) return openLogin();
+    if (!accountKey || !user) return openLogin();
     leavePublicPage("my-cv");
     setCvVisited(true);
     setView("my-cv");
   }
   function showComparisons() {
-    if (!token || !user) return openLogin();
+    if (!accountKey || !user) return openLogin();
     leavePublicPage("comparisons");
     if (view === "comparisons") {
       setComparisonVisit((value) => value + 1);
@@ -2858,8 +2899,11 @@ function App() {
     setIsSavingDraft(false);
     setView("signup");
   }
-  function logout() {
-    leavePublicPage("home");
+  function clearPrivateSession() {
+    ++authRequest.current;
+    resetSessionRequests();
+    window.history.replaceState({ jobComparerView: "home" }, "", import.meta.env.BASE_URL);
+    setPublicPage(null);
     clearComparisonRequests();
     setIsSavingDraft(false);
     setSaveStage("cv");
@@ -2868,9 +2912,34 @@ function App() {
     setDraftErrors([]);
     setSavedComparisonId(null);
     setSelectedJobId(null);
-    setToken(null);
+    setAccountKey(null);
     setUser(null);
+    setError(null);
+    setIsSubmitting(false);
+    setLogoutError(null);
+    setLoggingOut(false);
+    logoutPending.current = false;
     setView("home");
+  }
+  async function logout() {
+    if (logoutPending.current) return;
+    logoutPending.current = true;
+    setLoggingOut(true);
+    setLogoutError(null);
+    const request = authRequest.current;
+    try {
+      await signOut();
+      if (request === authRequest.current) clearPrivateSession();
+    } catch {
+      if (request === authRequest.current) {
+        setLogoutError("Could not log out on the server. Please retry.");
+      }
+    } finally {
+      if (request === authRequest.current) {
+        logoutPending.current = false;
+        setLoggingOut(false);
+      }
+    }
   }
   const draftProps: DraftProps = {
     cvFile,
@@ -2887,6 +2956,19 @@ function App() {
     onInputMethodChange: setSelectedInputMethod,
     onSave: saveDraft,
   };
+  if (authLoading || authError) return (
+    <PageFrame {...pageFrameProps}>
+      <main className="login-page">
+        {authError ? <div>
+          <p role="alert">{authError}</p>
+          <button type="button" className="text-button" onClick={() => {
+            setAuthError(null); setAuthLoading(true);
+            setAuthAttempt((attempt) => attempt + 1);
+          }}>Retry session</button>
+        </div> : <p role="status">Checking your session…</p>}
+      </main>
+    </PageFrame>
+  );
   if (view === "login")
     return (
       <PageFrame {...pageFrameProps}>
@@ -2992,12 +3074,20 @@ function App() {
           </ul>
           <p className="nav-label nav-label--lower">Account</p>
           <ul>
-            {user && token ? (
+            {user && accountKey ? (
               <li>
-                <button type="button" className="nav-button" onClick={logout}>
+                <button type="button" className="nav-button" onClick={logout}
+                  disabled={loggingOut}>
                   <Icon name="logout" />
                   Log out
                 </button>
+                {loggingOut && <p role="status">Logging out…</p>}
+                {logoutError && <div>
+                  <p role="alert">{logoutError}</p>
+                  <button type="button" className="text-button" onClick={logout}>
+                    Retry logout
+                  </button>
+                </div>}
               </li>
             ) : (
               <li>
@@ -3013,15 +3103,15 @@ function App() {
             )}
           </ul>
         </nav>
-        {user && token && <p className="sidebar-identity">{user.email}</p>}
+        {user && accountKey && <p className="sidebar-identity">{user.email}</p>}
       </aside>
       <PageFrame {...pageFrameProps}>
-      {jobsVisited && token && user && (
+      {jobsVisited && accountKey && user && (
         <Activity mode={view === "jobs" || view === "add-job"
           ? "visible" : "hidden"}>
           <JobsView
-            key={`${user.id}:${token}:${jobsVersion}`}
-            token={token}
+            key={`${user.id}:${accountKey}:${jobsVersion}`}
+            accountKey={accountKey}
             selectedJobId={selectedJobId}
             historyCache={historyCache}
             onJobSaved={() => {
@@ -3057,24 +3147,24 @@ function App() {
           />
         </Activity>
       )}
-      {comparisonsVisited && token && user && (
+      {comparisonsVisited && accountKey && user && (
         <Activity mode={view === "comparisons" ? "visible" : "hidden"}>
           <ComparisonsView
-            key={`${user.id}:${token}:${comparisonVisit}`}
-            token={token}
+            key={`${user.id}:${accountKey}:${comparisonVisit}`}
+            accountKey={accountKey}
             historyCache={historyCache}
           />
         </Activity>
       )}
-      {cvVisited && token && user && (
+      {cvVisited && accountKey && user && (
         <MyCvView
-          key={`${user.id}:${token}:${dashboardCvVersion}`}
-          token={token}
+          key={`${user.id}:${accountKey}:${dashboardCvVersion}`}
+          accountKey={accountKey}
           visible={view === "my-cv"}
           onSaved={handleCvSaved}
         />
       )}
-      {token && user && (
+      {accountKey && user && (
         <main className="main-content jobs-page jobs-list-page dashboard-page"
           hidden={view !== "dashboard"}>
           <div className="jobs-heading"><h1>Dashboard</h1></div>
@@ -3095,8 +3185,8 @@ function App() {
           )}
           {!isSavingDraft && !saveError && (
             <DashboardOverview
-              key={`${user.id}:${token}`}
-              token={token}
+              key={`${user.id}:${accountKey}`}
+              accountKey={accountKey}
               onCvSaved={() => {
                 handleCvSaved();
                 setDashboardCvVersion((value) => value + 1);
@@ -3154,10 +3244,10 @@ function App() {
           )}
         </main>
       )}
-      {view === "dashboard-comparison" && dashboardSelection && token && user && (
+      {view === "dashboard-comparison" && dashboardSelection && accountKey && user && (
         <SavedComparisonHistory
-          key={`${user.id}:${token}:${dashboardSelection.id}`}
-          token={token}
+          key={`${user.id}:${accountKey}:${dashboardSelection.id}`}
+          accountKey={accountKey}
           job={{
             id: dashboardSelection.job_id,
             title: dashboardSelection.job_title,

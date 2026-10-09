@@ -1,6 +1,6 @@
-export const HEALTH_URL = 'http://127.0.0.1:8001/health'
+export const HEALTH_URL = '/api/health'
 
-const API_URL = 'http://127.0.0.1:8001'
+const API_URL = '/api'
 
 export type CurrentUser = { id: number; email: string }
 export type SavedJob = { id: number; title: string; company_name: string }
@@ -42,7 +42,36 @@ export type ComparisonResult = {
   interpretation: string
 }
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  status?: number
+  constructor(message: string, status?: number) {
+    super(message)
+    this.status = status
+  }
+}
+
+let sessionGeneration = 0
+export function resetSessionRequests(): void { sessionGeneration += 1 }
+
+async function apiFetch(
+  url: string, options: RequestInit = {}, notifyExpiry = true,
+): Promise<Response> {
+  const generation = sessionGeneration
+  const headers = new Headers(options.headers)
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(options.method ?? 'GET')) {
+    headers.set('X-CSRF-Protection', '1')
+  }
+  const response = await fetch(url, {
+    ...options, headers, credentials: 'include', cache: 'no-store',
+  })
+  if (generation !== sessionGeneration || options.signal?.aborted) {
+    throw new DOMException('Request no longer belongs to the active session', 'AbortError')
+  }
+  if (response.status === 401 && notifyExpiry) {
+    window.dispatchEvent(new Event('session-expired'))
+  }
+  return response
+}
 
 async function getErrorMessage(response: Response): Promise<string> {
   const body: unknown = await response.json().catch(() => null)
@@ -50,22 +79,24 @@ async function getErrorMessage(response: Response): Promise<string> {
   return 'The request could not be completed. Please try again.'
 }
 
-export async function signIn(email: string, password: string): Promise<string> {
-  const response = await fetch(`${API_URL}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
-  const body: unknown = await response.json()
-  if (typeof body !== 'object' || body === null || !('access_token' in body) || typeof body.access_token !== 'string') throw new ApiError('Unable to sign in. Please try again.')
-  return body.access_token
+export async function signIn(email: string, password: string): Promise<void> {
+  const response = await apiFetch(`${API_URL}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }, false)
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+}
+
+export async function signOut(): Promise<void> {
+  const response = await apiFetch(`${API_URL}/logout`, { method: 'POST' }, false)
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
 }
 
 export async function signUp(email: string, password: string): Promise<void> {
-  const response = await fetch(`${API_URL}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  const response = await apiFetch(`${API_URL}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }, false)
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
 }
 
-export async function getCurrentUser(token: string): Promise<CurrentUser> {
-  const response = await fetch(`${API_URL}/me`, { headers: { Authorization: `Bearer ${token}` } })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+export async function getCurrentUser(signal?: AbortSignal): Promise<CurrentUser> {
+  const response = await apiFetch(`${API_URL}/me`, { signal }, false)
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) throw new ApiError('Unable to sign in. Please try again.')
   const user = body as Record<string, unknown>
@@ -73,18 +104,14 @@ export async function getCurrentUser(token: string): Promise<CurrentUser> {
   return { id: user.id, email: user.email }
 }
 
-function authorization(token: string): HeadersInit {
-  return { Authorization: `Bearer ${token}` }
-}
-
 export async function getSavedCv(
-  token: string, signal: AbortSignal,
+  signal: AbortSignal,
 ): Promise<string | null> {
-  const response = await fetch(`${API_URL}/cv`, {
-    method: 'GET', headers: authorization(token), signal,
+  const response = await apiFetch(`${API_URL}/cv`, {
+    method: 'GET', signal,
   })
   if (response.status === 404) return null
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (
     response.status === 206 || typeof body !== 'object' || body === null ||
@@ -94,29 +121,28 @@ export async function getSavedCv(
 }
 
 export async function saveCvText(
-  token: string, text: string, signal?: AbortSignal,
+  text: string, signal?: AbortSignal,
 ): Promise<void> {
-  const response = await fetch(`${API_URL}/cv`, {
+  const response = await apiFetch(`${API_URL}/cv`, {
     method: 'PUT',
-    headers: { ...authorization(token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
 }
 
 export async function uploadCv(
-  token: string, file: File, signal?: AbortSignal,
+  file: File, signal?: AbortSignal,
 ): Promise<string> {
   const form = new FormData()
   form.append('file', file)
-  const response = await fetch(`${API_URL}/cv/upload`, {
+  const response = await apiFetch(`${API_URL}/cv/upload`, {
     method: 'POST',
-    headers: authorization(token),
     body: form,
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (
     typeof body !== 'object' || body === null ||
@@ -130,17 +156,16 @@ export async function uploadCv(
 }
 
 export async function createJob(
-  token: string,
   job: { title: string; company_name: string; description: string },
   signal?: AbortSignal,
 ): Promise<SavedJob> {
-  const response = await fetch(`${API_URL}/jobs`, {
+  const response = await apiFetch(`${API_URL}/jobs`, {
     method: 'POST',
-    headers: { ...authorization(token), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(job),
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) {
     throw new ApiError('The job could not be saved. Please try again.')
@@ -161,15 +186,13 @@ export async function createJob(
 }
 
 export async function getJobs(
-  token: string,
   signal: AbortSignal,
 ): Promise<SavedJob[]> {
-  const response = await fetch(`${API_URL}/jobs`, {
+  const response = await apiFetch(`${API_URL}/jobs`, {
     method: 'GET',
-    headers: authorization(token),
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (response.status === 206 || !Array.isArray(body)) {
     throw new ApiError('The jobs response was invalid. Please try again.')
@@ -191,17 +214,15 @@ export async function getJobs(
 }
 
 export async function getJob(
-  token: string,
   jobId: number,
   signal: AbortSignal,
 ): Promise<JobDetails | null> {
-  const response = await fetch(`${API_URL}/jobs/${jobId}`, {
+  const response = await apiFetch(`${API_URL}/jobs/${jobId}`, {
     method: 'GET',
-    headers: authorization(token),
     signal,
   })
   if (response.status === 404) return null
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) {
     throw new ApiError('The job response was invalid. Please try again.')
@@ -221,14 +242,12 @@ export async function getJob(
 }
 
 export async function compareJob(
-  token: string,
   jobId: number,
 ): Promise<{ result: ComparisonResult; comparisonId: number | null }> {
-  const response = await fetch(`${API_URL}/jobs/${jobId}/compare`, {
+  const response = await apiFetch(`${API_URL}/jobs/${jobId}/compare`, {
     method: 'POST',
-    headers: authorization(token),
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   const savedId = response.headers?.get('X-Comparison-Id')
   const comparisonId = savedId && /^[1-9]\d*$/.test(savedId)
@@ -290,12 +309,12 @@ function parseSavedComparison(body: unknown, jobId: number): SavedComparison {
 }
 
 export async function getComparisonSummaries(
-  token: string, signal: AbortSignal,
+  signal: AbortSignal,
 ): Promise<ComparisonSummary[]> {
-  const response = await fetch(`${API_URL}/comparisons`, {
-    method: 'GET', headers: authorization(token), signal,
+  const response = await apiFetch(`${API_URL}/comparisons`, {
+    method: 'GET', signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const body: unknown = await response.json()
   const invalid = 'The comparison history response was invalid. Please retry.'
   if (response.status === 206 || !Array.isArray(body)) {
@@ -320,12 +339,12 @@ export async function getComparisonSummaries(
 }
 
 export async function getSavedComparisons(
-  token: string, jobId: number, signal: AbortSignal,
+  jobId: number, signal: AbortSignal,
 ): Promise<SavedComparison[]> {
-  const response = await fetch(`${API_URL}/jobs/${jobId}/comparisons`, {
-    method: 'GET', headers: authorization(token), signal,
+  const response = await apiFetch(`${API_URL}/jobs/${jobId}/comparisons`, {
+    method: 'GET', signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   if (response.status === 206) {
     throw new ApiError('The saved comparison history was incomplete. Please retry.')
   }
@@ -337,13 +356,13 @@ export async function getSavedComparisons(
 }
 
 export async function getSavedComparison(
-  token: string, jobId: number, comparisonId: number, signal: AbortSignal,
+  jobId: number, comparisonId: number, signal: AbortSignal,
 ): Promise<SavedComparison> {
-  const response = await fetch(
+  const response = await apiFetch(
     `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
-    { method: 'GET', headers: authorization(token), signal },
+    { method: 'GET', signal },
   )
-  if (!response.ok) throw new ApiError(await getErrorMessage(response))
+  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
   const entry = parseSavedComparison(await response.json(), jobId)
   if (entry.id !== comparisonId) {
     throw new ApiError('The saved comparison response was invalid.')
@@ -353,7 +372,7 @@ export async function getSavedComparison(
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {
   try {
-    const response = await fetch(HEALTH_URL, { signal })
+    const response = await apiFetch(HEALTH_URL, { signal }, false)
     if (!response.ok) return false
     const body: unknown = await response.json()
     return (

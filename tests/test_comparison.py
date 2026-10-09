@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from fastapi.testclient import TestClient
+from conftest import BrowserClient as TestClient
 from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 
@@ -129,7 +129,12 @@ def create_user(client: TestClient) -> Iterator[Callable[[], dict[str, str]]]:
             "/login", json={"email": email, "password": PASSWORD}
         )
         assert login.status_code == 200
-        return {"Authorization": f"Bearer {login.json()['access_token']}"}
+        client.cookies.clear()
+        return {
+            "Cookie": (
+                f"job_comparer_session={login.cookies['job_comparer_session']}"
+            )
+        }
 
     yield create
     with Session(get_engine()) as session:

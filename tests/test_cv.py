@@ -7,7 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from docx import Document
-from fastapi.testclient import TestClient
+from conftest import BrowserClient as TestClient
 from pypdf import PdfReader, PdfWriter
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -110,8 +110,11 @@ def create_user(
             "/login", json={"email": email, "password": PASSWORD}
         )
         assert login.status_code == 200
+        client.cookies.clear()
         return signup.json()["id"], {
-            "Authorization": f"Bearer {login.json()['access_token']}"
+            "Cookie": (
+                f"job_comparer_session={login.cookies['job_comparer_session']}"
+            )
         }
 
     yield create
