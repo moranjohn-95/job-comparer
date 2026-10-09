@@ -35,6 +35,7 @@ async function renderSignedOutApp() {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
 });
 
 test("restores the cookie session on startup without replaying mutations", async () => {
@@ -74,7 +75,7 @@ test.each(["network", "server"])("retries an initial %s session error", async (f
   expect(attempts).toBe(2);
 });
 
-test("clears an expired session and never replays its draft after login", async () => {
+test.each([401, 403])("clears a blocked session (%s) without replaying its draft", async (status) => {
   let jobReads = 0;
   const writes: string[] = [];
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -83,7 +84,9 @@ test("clears an expired session and never replays its draft after login", async 
     if (url.endsWith("/jobs")) {
       jobReads += 1;
       return Promise.resolve(jobReads === 2
-        ? new Response(null, { status: 401 }) : { ok: true, json: async () => [] });
+        ? new Response(status === 403 ? JSON.stringify({ detail: {
+          code: "email_verification_required", message: "Verify your email before signing in.", email: "ada@example.com",
+        } }) : null, { status }) : { ok: true, json: async () => [] });
     }
     if (url.endsWith("/cv")) return Promise.resolve(new Response(null, { status: 404 }));
     return Promise.resolve(savedDraftResponse(url));
@@ -95,7 +98,11 @@ test("clears an expired session and never replays its draft after login", async 
   await screen.findByRole("heading", { name: "Start a comparison" });
   fireEvent.change(screen.getByLabelText("Job title"), { target: { value: "Private draft" } });
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("Your session has expired");
+  if (status === 401) expect(await screen.findByRole("alert")).toHaveTextContent("Your session has expired");
+  else {
+    expect(await screen.findByRole("heading", { name: "Check your email" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
+  }
   expect(screen.queryByText("ada@example.com")).not.toBeInTheDocument();
   expect(screen.queryByDisplayValue("Private draft")).not.toBeInTheDocument();
   enterLogin();
@@ -357,7 +364,12 @@ test("asks which CV to use and preserves the draft through signup and login", as
   expect(
     screen.getByText("Create an account to save your CV and job description."),
   ).toBeVisible();
-  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "ada@example.com" } });
+  fireEvent.change(screen.getByLabelText("Password"), { target: { value: "long-enough-password" } });
+  fireEvent.change(screen.getByLabelText("Confirm password"), { target: { value: "long-enough-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+  await screen.findByRole("heading", { name: "Check your email" });
+  fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
   fireEvent.click(screen.getByRole("link", { name: "Back to home" }));
   expect(screen.getByLabelText("Paste your CV text")).toHaveValue("Ada CV");
   expect(screen.getByLabelText("Job description")).toHaveValue(
@@ -384,7 +396,7 @@ test("opens signup from the home hero and can return to login", async () => {
   expect(screen.getByLabelText("Email address")).toBeVisible();
 });
 
-test("shows signup validation and duplicate-email errors", async () => {
+test("shows signup validation and recoverable delivery errors", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => {
     if (String(input).endsWith("/health"))
       return Promise.resolve({
@@ -393,7 +405,8 @@ test("shows signup validation and duplicate-email errors", async () => {
       });
     return Promise.resolve({
       ok: false,
-      json: async () => ({ detail: "Email is already registered" }),
+      status: 503,
+      json: async () => ({ detail: { code: "email_delivery_failed", message: "Email could not be sent. Please retry." } }),
     });
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -420,11 +433,13 @@ test("shows signup validation and duplicate-email errors", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "Create account" }));
   expect(await screen.findByRole("alert")).toHaveTextContent(
-    "Email is already registered",
+    "Email could not be sent. Please retry.",
   );
+  expect(screen.getByRole("heading", { name: "Check your email" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Resend email" })).toBeEnabled();
 });
 
-test("returns to login after successful signup", async () => {
+test("shows check-email after signup and provides explicit sign-in navigation", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn((input: RequestInfo | URL) =>
@@ -449,7 +464,68 @@ test("returns to login after successful signup", async () => {
     target: { value: "long-enough-password" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+  expect(await screen.findByRole("heading", { name: "Check your email" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Resend email" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
   expect(await screen.findByRole("heading", { name: "Log in" })).toBeVisible();
+});
+
+test("consumes a fragment token only on password-confirmed submission", async () => {
+  const token = "a".repeat(43);
+  window.history.replaceState(null, "", `/verify-email#token=${token}`);
+  const confirms: RequestInit[] = [];
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    expect(String(input)).not.toContain(token);
+    if (String(input).endsWith("/verification/confirm")) {
+      confirms.push(init!);
+      return Promise.resolve(new Response(JSON.stringify(confirms.length === 1
+        ? { detail: { code: "invalid_verification", message: "Invalid or expired link, or incorrect password." } }
+        : { message: "Email verified." }), { status: confirms.length === 1 ? 400 : 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ status: "ok" })));
+  }));
+  await renderSignedOutApp();
+  expect(await screen.findByRole("heading", { name: "Verify your email" })).toBeVisible();
+  expect(window.location.hash).toBe("");
+  expect(JSON.stringify(window.history.state)).not.toContain(token);
+  expect(confirms).toHaveLength(0);
+  fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "wrong-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Verify email" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Invalid or expired");
+  fireEvent.change(screen.getByLabelText("Account password"), { target: { value: "correct-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Verify email" }));
+  expect(await screen.findByRole("heading", { name: "Email verified" })).toBeVisible();
+  expect(confirms).toHaveLength(2);
+  expect(JSON.parse(String(confirms[1].body))).toEqual({ token, password: "correct-password" });
+  expect(confirms[1].method).toBe("POST");
+  expect(screen.queryByRole("heading", { name: "Dashboard" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Back to sign in" }));
+  expect(screen.getByRole("heading", { name: "Log in" })).toBeVisible();
+});
+
+test("verification-required login offers resend and honours cooldown errors", async () => {
+  let resends = 0;
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    if (String(input).endsWith("/login")) return Promise.resolve(new Response(JSON.stringify({ detail: {
+      code: "email_verification_required", message: "Verify your email before signing in.",
+    } }), { status: 403 }));
+    if (String(input).endsWith("/verification/resend")) {
+      resends += 1;
+      return Promise.resolve(new Response(JSON.stringify({ detail: "Please wait before resending." }), {
+        status: 429, headers: { "Retry-After": "60" },
+      }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ status: "ok" })));
+  }));
+  await renderSignedOutApp();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Check your email" });
+  expect(resends).toBe(0);
+  fireEvent.click(screen.getByRole("button", { name: "Resend email" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Please wait before resending");
+  expect(screen.getByRole("button", { name: "Resend email" })).toBeDisabled();
+  expect(resends).toBe(1);
 });
 
 test("shows an error when login credentials are rejected", async () => {

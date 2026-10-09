@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from conftest import BrowserClient as TestClient
+from conftest import BrowserClient as TestClient, signup_verified
 from sqlalchemy import delete, func
 from sqlalchemy.orm import Session
 
@@ -119,12 +119,7 @@ def create_user(client: TestClient) -> Iterator[Callable[[], dict[str, str]]]:
     def create() -> dict[str, str]:
         email = f"comparison-test-{uuid4().hex}@example.com"
         emails.append(email)
-        assert (
-            client.post(
-                "/signup", json={"email": email, "password": PASSWORD}
-            ).status_code
-            == 201
-        )
+        signup_verified(client, email, PASSWORD)
         login = client.post(
             "/login", json={"email": email, "password": PASSWORD}
         )

@@ -72,3 +72,25 @@ def reserve_auth_attempts(
             session.rollback()
             raise AuthRateLimitReached()
     session.commit()
+
+
+def reserve_auth_cooldown(
+    session: Session, scope: str, seconds: int
+) -> None:
+    """Reserve an actual minimum interval, including across window edges."""
+    statement = insert(AuthRateLimitCounter).values(
+        counter_key=scope, attempt_count=0,
+        last_attempt_at=func.clock_timestamp(),
+    )
+    statement = statement.on_conflict_do_update(
+        index_elements=[AuthRateLimitCounter.counter_key],
+        set_={"last_attempt_at": func.clock_timestamp()},
+        where=(AuthRateLimitCounter.last_attempt_at.is_(None)) | (
+            AuthRateLimitCounter.last_attempt_at
+            <= func.clock_timestamp() - timedelta(seconds=seconds)
+        ),
+    ).returning(AuthRateLimitCounter.counter_key)
+    if session.scalar(statement) is None:
+        session.rollback()
+        raise AuthRateLimitReached()
+    session.commit()

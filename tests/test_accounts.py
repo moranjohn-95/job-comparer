@@ -2,17 +2,20 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
+import re
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import pytest
 import jwt
-from conftest import BrowserClient as TestClient
-from sqlalchemy import delete, select
+from conftest import BrowserClient as TestClient, signup_verified
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
 
 from auth import verify_password
+from auth_sessions import create_session
 from auth_http import get_auth_settings
 from auth_rate_limit import (
     LOGIN_EMAIL_ATTEMPT_LIMIT,
@@ -24,9 +27,24 @@ from auth_rate_limit import (
 from database import get_engine
 from main import app, client_ip
 import main
-from models import AuthRateLimitCounter, AuthSession, User
+import email_verification
+import mail_delivery
+from models import AuthRateLimitCounter, AuthSession, User, VerificationToken
 
 PASSWORD = "correct-horse-battery-123"
+
+
+def emailed_token(client, email):
+    body = next(body for to, _, body in reversed(client.outbox) if to == email)
+    return re.search(r"#token=([A-Za-z0-9_-]{43})", body).group(1)
+
+
+def end_email_cooldown():
+    with Session(get_engine()) as db:
+        db.execute(update(AuthRateLimitCounter).values(
+            last_attempt_at=datetime.now(timezone.utc) - timedelta(seconds=61)
+        ))
+        db.commit()
 
 
 @pytest.fixture
@@ -45,27 +63,218 @@ def email() -> Iterator[str]:
 
 
 def signup(client: TestClient, email: str) -> None:
-    response = client.post(
-        "/signup", json={"email": email, "password": PASSWORD}
-    )
-    assert response.status_code == 201
+    signup_verified(client, email, PASSWORD)
 
 
-def test_signup_hashes_password_and_returns_public_user(
+def test_signup_hashes_password_without_exposing_account_state(
     client: TestClient, email: str
 ) -> None:
     response = client.post(
         "/signup", json={"email": email.upper(), "password": PASSWORD}
     )
 
-    assert response.status_code == 201
-    assert response.json() == {"id": response.json()["id"], "email": email}
+    assert response.status_code == 202
+    assert set(response.json()) == {"message"}
+    assert "set-cookie" not in response.headers
     assert PASSWORD not in response.text
     with Session(get_engine()) as session:
         user = session.scalar(select(User).where(User.email == email))
         assert user is not None
         assert user.password_hash != PASSWORD
         assert verify_password(PASSWORD, user.password_hash)
+        assert user.email_verified_at is None
+
+
+def test_verification_requires_password_and_unlocks_login(client, email):
+    response = client.post("/signup", json={
+        "email": email, "password": PASSWORD,
+    })
+    assert response.status_code == 202
+    token = emailed_token(client, email)
+    assert token not in response.text
+    assert "/verify-email#token=" in client.outbox[-1][2]
+    with Session(get_engine()) as db:
+        user = db.scalar(select(User).where(User.email == email))
+        saved = db.scalar(select(VerificationToken).where(
+            VerificationToken.user_id == user.id
+        ))
+        assert saved.token_hash == sha256(
+            f"email_verification:{token}".encode()
+        ).hexdigest()
+        assert saved.expires_at - saved.created_at == timedelta(hours=24)
+        session_cookie = create_session(db, user.id)
+        db.commit()
+    cookie = {"Cookie": f"job_comparer_session={session_cookie}"}
+    blocked = client.get("/me", headers=cookie)
+    assert blocked.status_code == 403
+    assert blocked.json()["detail"]["code"] == "email_verification_required"
+    assert client.post("/login", json={
+        "email": email, "password": "incorrect",
+    }).status_code == 401
+    login = client.post("/login", json={"email": email, "password": PASSWORD})
+    assert login.status_code == 403
+    assert "set-cookie" not in login.headers
+    wrong = client.post("/verification/confirm", json={
+        "token": token, "password": "incorrect",
+    })
+    assert wrong.status_code == 400
+    confirmed = client.post("/verification/confirm", json={
+        "token": token, "password": PASSWORD,
+    })
+    assert confirmed.status_code == 200
+    assert "set-cookie" not in confirmed.headers
+    assert client.get("/me", headers=cookie).status_code == 401
+    assert client.post("/login", json={
+        "email": email, "password": PASSWORD,
+    }).status_code == 200
+    assert client.get("/me").status_code == 200
+    assert client.post("/verification/confirm", json={
+        "token": token, "password": PASSWORD,
+    }).status_code == 400
+
+
+def test_expired_links_and_all_outstanding_tokens_are_invalidated(
+    client, email
+):
+    client.post("/signup", json={"email": email, "password": PASSWORD})
+    expired = emailed_token(client, email)
+    with Session(get_engine()) as db:
+        db.execute(update(VerificationToken).where(
+            VerificationToken.token_hash
+            == email_verification.token_digest(expired)
+        ).values(expires_at=datetime.now(timezone.utc) - timedelta(seconds=1)))
+        db.commit()
+    assert client.post("/verification/confirm", json={
+        "token": expired, "password": PASSWORD,
+    }).status_code == 400
+    tokens = []
+    for _ in range(2):
+        end_email_cooldown()
+        assert client.post("/verification/resend", json={
+            "email": email,
+        }).status_code == 202
+        tokens.append(emailed_token(client, email))
+    assert tokens[0] != tokens[1]
+    assert client.post("/verification/confirm", json={
+        "token": tokens[0], "password": PASSWORD,
+    }).status_code == 200
+    assert client.post("/verification/confirm", json={
+        "token": tokens[1], "password": PASSWORD,
+    }).status_code == 400
+    with Session(get_engine()) as db:
+        user = db.scalar(select(User).where(User.email == email))
+        assert db.scalar(select(VerificationToken.id).where(
+            VerificationToken.user_id == user.id,
+            VerificationToken.consumed_at.is_(None),
+        )) is None
+
+
+def test_confirmation_is_atomic_across_workers(client, email):
+    client.post("/signup", json={"email": email, "password": PASSWORD})
+    token = emailed_token(client, email)
+
+    def confirm(_):
+        with TestClient(app) as browser:
+            return browser.post("/verification/confirm", json={
+                "token": token, "password": PASSWORD,
+            }).status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(confirm, range(2))) == [200, 400]
+
+
+def test_resend_is_generic_and_has_persistent_cooldown(client, email):
+    signup(client, email)
+    end_email_cooldown()
+    known = client.post("/verification/resend", json={"email": email})
+    unknown = client.post("/verification/resend", json={
+        "email": f"unknown-{uuid4().hex}@example.com",
+    })
+    assert known.status_code == unknown.status_code == 202
+    assert known.json() == unknown.json()
+    with TestClient(app) as another_worker:
+        limited = another_worker.post("/verification/resend", json={
+            "email": email,
+        })
+    assert limited.status_code == 429
+    assert limited.headers["Retry-After"] == "60"
+    end_email_cooldown()
+    assert client.post("/verification/resend", json={
+        "email": email,
+    }).status_code == 202
+
+
+def test_verification_password_attempts_are_limited(client, email):
+    client.post("/signup", json={"email": email, "password": PASSWORD})
+    token = emailed_token(client, email)
+    for _ in range(5):
+        assert client.post("/verification/confirm", json={
+            "token": token, "password": "wrong-password",
+        }).status_code == 400
+    assert client.post("/verification/confirm", json={
+        "token": token, "password": PASSWORD,
+    }).status_code == 429
+
+
+def test_missing_mail_config_is_recoverable_through_resend(
+    client, email, monkeypatch
+):
+    mocked_delivery = email_verification.send_email
+    for name in ("SMTP_HOST", "SMTP_USERNAME", "SMTP_PASSWORD", "SMTP_FROM"):
+        monkeypatch.setenv(name, "")
+    # Exercise real configuration rejection, without making an SMTP connection.
+    monkeypatch.setattr(email_verification, "send_email",
+                        mail_delivery.send_email)
+    response = client.post("/signup", json={
+        "email": email, "password": PASSWORD,
+    })
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "email_delivery_failed"
+    assert client.outbox == []
+    with Session(get_engine()) as db:
+        user = db.scalar(select(User).where(User.email == email))
+        assert user is not None and user.email_verified_at is None
+    monkeypatch.setattr(email_verification, "send_email", mocked_delivery)
+    end_email_cooldown()
+    assert client.post("/verification/resend", json={
+        "email": email,
+    }).status_code == 202
+    assert client.post("/verification/confirm", json={
+        "token": emailed_token(client, email), "password": PASSWORD,
+    }).status_code == 200
+
+
+@pytest.mark.parametrize("url", [
+    "", "http://app.example", "https://untrusted.example", "https://[",
+    "https://app.example#token=not-allowed", "https://app.example?redirect=x",
+])
+def test_verification_links_require_configured_https_url(monkeypatch, url):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "true")
+    monkeypatch.setenv("AUTH_ALLOWED_ORIGINS", "https://app.example")
+    monkeypatch.setenv("PUBLIC_FRONTEND_URL", url)
+    with pytest.raises(mail_delivery.MailDeliveryError):
+        email_verification.public_frontend_url()
+
+
+@pytest.mark.parametrize("setting,value", [
+    ("SMTP_TLS_MODE", "none"), ("SMTP_PORT", "0"),
+    ("SMTP_TIMEOUT_SECONDS", "0"), ("SMTP_TIMEOUT_SECONDS", "31"),
+    ("SMTP_USERNAME", ""),
+])
+def test_mail_rejects_unsafe_configuration_before_connecting(
+    monkeypatch, setting, value
+):
+    for name, valid in {
+        "SMTP_HOST": "smtp.example.invalid", "SMTP_PORT": "465",
+        "SMTP_USERNAME": "test-only", "SMTP_PASSWORD": "test-only",
+        "SMTP_FROM": "sender@example.com", "SMTP_TLS_MODE": "implicit",
+        "SMTP_TIMEOUT_SECONDS": "10",
+    }.items():
+        monkeypatch.setenv(name, valid)
+    monkeypatch.setenv(setting, value)
+    with pytest.raises(mail_delivery.MailDeliveryError):
+        mail_delivery.send_email("recipient@example.com", "Test", "Test")
 
 
 def test_login_issues_cookie_only(client: TestClient, email: str) -> None:
@@ -99,15 +308,26 @@ def test_login_issues_cookie_only(client: TestClient, email: str) -> None:
     assert PASSWORD not in response.text
 
 
-def test_duplicate_email_is_rejected(client: TestClient, email: str) -> None:
+def test_duplicate_signup_preserves_password_and_returns_generic_response(
+    client: TestClient, email: str
+) -> None:
     signup(client, email)
+    with Session(get_engine()) as db:
+        db.execute(update(AuthRateLimitCounter).values(last_attempt_at=None))
+        db.commit()
 
     response = client.post(
-        "/signup", json={"email": email.upper(), "password": PASSWORD}
+        "/signup", json={
+            "email": email.upper(), "password": "changed-password",
+        }
     )
 
-    assert response.status_code == 409
-    assert response.json() == {"detail": "Email is already registered"}
+    assert response.status_code == 202
+    assert set(response.json()) == {"message"}
+    with Session(get_engine()) as db:
+        user = db.scalar(select(User).where(User.email == email))
+        assert verify_password(PASSWORD, user.password_hash)
+        assert not verify_password("changed-password", user.password_hash)
 
 
 @pytest.mark.parametrize("wrong_field", ["email", "password"])
@@ -223,7 +443,7 @@ def test_signup_limit_is_per_ip(client: TestClient) -> None:
                 "password": PASSWORD,
             },
         )
-        assert response.status_code == 201
+        assert response.status_code == 202
 
     response = client.post(
         "/signup",
@@ -369,6 +589,7 @@ def test_logout_revokes_cookie_and_is_idempotent(client, email) -> None:
     ("POST", "/signup"), ("POST", "/login"), ("POST", "/logout"),
     ("POST", "/cv/upload"), ("PUT", "/cv"), ("POST", "/jobs"),
     ("POST", "/jobs/1/compare"), ("DELETE", "/jobs/1"),
+    ("POST", "/verification/resend"), ("POST", "/verification/confirm"),
 ])
 @pytest.mark.parametrize("origin,protection", [
     (None, "1"), ("null", "1"), ("https://untrusted.example", "1"),

@@ -1,6 +1,7 @@
 import ipaddress
 import os
-from datetime import datetime, timezone
+from hashlib import sha256
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -16,6 +17,8 @@ from fastapi import (
 )
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -44,6 +47,7 @@ from auth_rate_limit import (
     login_ip_scope,
     reserve_auth_attempt,
     reserve_auth_attempts,
+    reserve_auth_cooldown,
     signup_scope,
 )
 from comparison import (
@@ -59,10 +63,28 @@ from comparison import (
 )
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
+from email_verification import (
+    confirm_verification,
+    send_verification_email,
+    verification_email,
+)
+from mail_delivery import MailDeliveryError
 from models import ComparisonHistory, SavedCV, SavedJob, User
 
 auth_settings = get_auth_settings()
 app = FastAPI()
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_auth_validation(request: Request, error):
+    if request.url.path in {"/signup", "/login"} or (
+        request.url.path.startswith("/verification/")
+    ):
+        return JSONResponse(
+            {"detail": "Invalid request. Check your email, password "
+                       "and verification link."}, status_code=422,
+        )
+    return await request_validation_exception_handler(request, error)
 
 
 @app.exception_handler(Exception)
@@ -113,6 +135,15 @@ class SignupRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class VerifyEmailRequest(BaseModel):
+    token: str = Field(max_length=128)
     password: str = Field(min_length=1, max_length=128)
 
 
@@ -264,7 +295,53 @@ def current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
         )
-    return resolved[1]
+    user = resolved[1]
+    if user.email_verified_at is None:
+        raise verification_required(user.email)
+    return user
+
+
+def verification_required(email: str) -> HTTPException:
+    return HTTPException(status_code=403, detail={
+        "code": "email_verification_required",
+        "message": "Verify your email before signing in.",
+        "email": email,
+    })
+
+
+def email_scope(action: str, email: str) -> str:
+    return f"{action}:email:{sha256(email.encode()).hexdigest()}"
+
+
+def reserve_email_delivery(session: Session, email: str, ip: str) -> None:
+    try:
+        reserve_auth_attempts(session, (
+            (f"verification-send:ip:{ip}", 20, timedelta(hours=1)),
+            (email_scope("verification-send", email), 5, timedelta(hours=1)),
+        ))
+        reserve_auth_cooldown(
+            session, email_scope("verification-cooldown", email), 60
+        )
+    except AuthRateLimitReached:
+        raise HTTPException(status_code=429, detail={
+            "code": "verification_rate_limited",
+            "message": "Please wait before trying again. Emails have a "
+                       "60-second cooldown and hourly sending limits.",
+        }, headers={"Retry-After": "60"}) from None
+
+
+def deliver_verification(session: Session, email: str) -> dict[str, str]:
+    try:
+        send_verification_email(session, email)
+    except MailDeliveryError:
+        raise HTTPException(status_code=503, detail={
+            "code": "email_delivery_failed",
+            "message": "Email could not be sent. Please retry using resend "
+                       "after a minute. If this continues, try again later.",
+        }) from None
+    return {"message": "Check your email for the next steps. "
+                       "If you have an account, your existing details "
+                       "have not been changed."}
 
 
 @app.get("/health")
@@ -273,13 +350,13 @@ def health() -> dict[str, str]:
 
 
 @app.post(
-    "/signup", response_model=UserPublic, status_code=status.HTTP_201_CREATED
+    "/signup", status_code=status.HTTP_202_ACCEPTED
 )
 def signup(
     payload: SignupRequest,
     request: Request,
     session: Session = Depends(get_session),
-) -> User:
+) -> dict[str, str]:
     try:
         reserve_auth_attempt(
             session,
@@ -290,21 +367,50 @@ def signup(
     except AuthRateLimitReached:
         raise rate_limited() from None
     email = normalized_email(payload.email)
-    if session.scalar(select(User).where(User.email == email)) is not None:
-        raise HTTPException(
-            status_code=409, detail="Email is already registered"
-        )
-    user = User(email=email, password_hash=hash_password(payload.password))
-    session.add(user)
+    reserve_email_delivery(session, email, client_ip(request))
+    password_hash = hash_password(payload.password)
+    if session.scalar(select(User.id).where(User.email == email)) is None:
+        session.add(User(email=email, password_hash=password_hash))
+        try:
+            session.commit()
+        except IntegrityError:
+            # Concurrent signup must neither overwrite nor disclose users.
+            session.rollback()
+    return deliver_verification(session, email)
+
+
+@app.post("/verification/resend", status_code=202)
+def resend_verification(
+    payload: ResendVerificationRequest, request: Request,
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
+    email = normalized_email(payload.email)
+    reserve_email_delivery(session, email, client_ip(request))
+    return deliver_verification(session, email)
+
+
+@app.post("/verification/confirm")
+def verify_email(
+    payload: VerifyEmailRequest, request: Request,
+    session: Session = Depends(get_session),
+) -> dict[str, str]:
     try:
-        session.commit()
-    except IntegrityError:
-        session.rollback()
-        raise HTTPException(
-            status_code=409, detail="Email is already registered"
-        ) from None
-    session.refresh(user)
-    return user
+        reserve_auth_attempt(session, f"verify:ip:{client_ip(request)}",
+                             20, timedelta(minutes=15))
+        email = verification_email(session, payload.token)
+        if email is not None:
+            reserve_auth_attempt(session, email_scope("verify", email),
+                                 5, timedelta(minutes=15))
+    except AuthRateLimitReached:
+        raise rate_limited() from None
+    if not confirm_verification(session, payload.token, payload.password):
+        raise HTTPException(status_code=400, detail={
+            "code": "invalid_verification",
+            "message": "This link is invalid or expired, or the password "
+                       "is incorrect. Check your password or resend email.",
+        })
+    session.commit()
+    return {"message": "Email verified. You can now sign in."}
 
 
 @app.post("/login", response_model=UserPublic)
@@ -339,6 +445,8 @@ def login(
         payload.password, user.password_hash
     ):
         raise invalid_credentials()
+    if user.email_verified_at is None:
+        raise verification_required(user.email)
     token = create_session(session, user.id)
     saved_session, _ = resolve_session(session, token)
     expires_at = saved_session.expires_at.astimezone(timezone.utc)

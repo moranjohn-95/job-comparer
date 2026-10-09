@@ -7,7 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from docx import Document
-from conftest import BrowserClient as TestClient
+from conftest import BrowserClient as TestClient, signup_verified
 from pypdf import PdfReader, PdfWriter
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
@@ -102,16 +102,13 @@ def create_user(
     def create() -> tuple[int, dict[str, str]]:
         email = f"cv-test-{uuid4().hex}@example.com"
         emails.append(email)
-        signup = client.post(
-            "/signup", json={"email": email, "password": PASSWORD}
-        )
-        assert signup.status_code == 201
+        signup_verified(client, email, PASSWORD)
         login = client.post(
             "/login", json={"email": email, "password": PASSWORD}
         )
         assert login.status_code == 200
         client.cookies.clear()
-        return signup.json()["id"], {
+        return login.json()["id"], {
             "Cookie": (
                 f"job_comparer_session={login.cookies['job_comparer_session']}"
             )

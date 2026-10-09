@@ -24,6 +24,8 @@ import {
   signOut,
   signUp,
   resetSessionRequests,
+  resendVerification,
+  confirmEmail,
   saveCvText,
   uploadCv,
   type CurrentUser,
@@ -38,7 +40,7 @@ import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 const appViews = ["home", "dashboard", "jobs", "add-job", "comparisons", "my-cv",
-  "dashboard-comparison", "login", "signup"] as const;
+  "dashboard-comparison", "login", "signup", "check-email", "verify-email"] as const;
 type View = typeof appViews[number];
 const publicPageTitles = { privacy: "Privacy", terms: "Terms", contact: "Contact" } as const;
 type PublicPage = keyof typeof publicPageTitles;
@@ -337,6 +339,105 @@ function LoginView({
         </p>
     </AuthLayout>
   );
+}
+
+function CheckEmailView({ email: initialEmail, initialError, sent, onBack, onLogin }: {
+  email: string; initialError: string | null; sent: boolean;
+  onBack: () => void; onLogin: () => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const [error, setError] = useState(initialError);
+  const [delivered, setDelivered] = useState(sent);
+  const [saving, setSaving] = useState(false);
+  const [cooldown, setCooldown] = useState(sent ? 60 : 0);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = window.setTimeout(() => setCooldown((value) => value - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [cooldown]);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (request.current || cooldown > 0) return;
+    const controller = new AbortController(); request.current = controller;
+    setSaving(true); setError(null);
+    try {
+      await resendVerification(email, controller.signal);
+      if (!controller.signal.aborted) { setDelivered(true); setCooldown(60); }
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        setError(caught instanceof ApiError ? caught.message : "Email could not be sent. Please retry.");
+        if (caught instanceof ApiError && caught.retryAfter) setCooldown(caught.retryAfter);
+      }
+    } finally {
+      if (!controller.signal.aborted) { request.current = null; setSaving(false); }
+    }
+  }
+  return <AuthLayout headingId="check-email-heading" onBack={onBack}>
+    <h1 id="check-email-heading">Check your email</h1>
+    <p className="login-intro">{delivered
+      ? "Check your inbox and spam folder for the next steps. Your existing account details have not been changed."
+      : "Verify your email before signing in. Request an email below to continue."}</p>
+    <p className="login-intro">Confirm using the password you chose for this account. Do not use a password supplied by someone else.</p>
+    <form className="login-form" onSubmit={submit}>
+      <label htmlFor="verification-email">Email address</label>
+      <input id="verification-email" type="email" autoComplete="email" required
+        value={email} onChange={(event) => setEmail(event.target.value)} disabled={saving} />
+      {error && <p className="form-error" role="alert">{error}</p>}
+      {cooldown > 0 && <p role="status">You can resend in {cooldown} seconds.</p>}
+      <button type="submit" disabled={saving || cooldown > 0}>
+        {saving ? "Sending…" : "Resend email"}
+      </button>
+    </form>
+    <p className="form-switch"><button type="button" className="text-button" onClick={onLogin}>Back to sign in</button></p>
+  </AuthLayout>;
+}
+
+function VerifyEmailView({ token, onBack, onLogin, onResend, onVerified }: {
+  token: string | null; onBack: () => void; onLogin: () => void;
+  onResend: () => void; onVerified: () => void;
+}) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token || request.current) return;
+    const controller = new AbortController(); request.current = controller;
+    setSaving(true); setError(null);
+    try {
+      await confirmEmail(token, password, controller.signal);
+      if (!controller.signal.aborted) {
+        setVerified(true); setPassword(""); onVerified();
+      }
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(caught instanceof ApiError
+        ? caught.message : "Verification could not be completed. Please retry.");
+    } finally {
+      if (!controller.signal.aborted) { request.current = null; setSaving(false); }
+    }
+  }
+  return <AuthLayout headingId="verify-email-heading" onBack={onBack}>
+    <h1 id="verify-email-heading">{verified ? "Email verified" : "Verify your email"}</h1>
+    {verified ? <p role="status">Your email is verified. Sign in to continue.</p>
+      : token ? <>
+        <p className="login-intro">Enter the password you chose when signing up, then confirm. Opening this page does not activate an account.</p>
+        <form className="login-form" onSubmit={submit}>
+          <label htmlFor="verification-password">Account password</label>
+          <input id="verification-password" type="password" autoComplete="current-password"
+            required maxLength={128} value={password}
+            onChange={(event) => setPassword(event.target.value)} disabled={saving} />
+          {error && <p className="form-error" role="alert">{error}</p>}
+          <button type="submit" disabled={saving}>{saving ? "Verifying…" : "Verify email"}</button>
+        </form>
+      </> : <p role="alert">This verification link is missing or invalid. Request a new email below.</p>}
+    {!verified && <p className="form-switch"><button className="text-button" type="button" onClick={onResend}>Resend email</button></p>}
+    <p className="form-switch"><button className="text-button" type="button" onClick={onLogin}>Back to sign in</button></p>
+  </AuthLayout>;
 }
 
 function SignupView({
@@ -2481,7 +2582,12 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
 function App() {
   const [status, setStatus] = useState<ConnectionStatus>("checking");
   const [checkNumber, setCheckNumber] = useState(0);
-  const [view, setView] = useState<View>("home");
+  const [view, setView] = useState<View>(() => window.location.pathname
+    === `${import.meta.env.BASE_URL}verify-email` ? "verify-email" : "home");
+  const [verificationToken, setVerificationToken] = useState<string | null>(null);
+  const [verificationVisit, setVerificationVisit] = useState(0);
+  const [verificationEmail, setVerificationEmail] = useState("");
+  const [verificationSent, setVerificationSent] = useState(false);
   const [publicPage, setPublicPage] = useState<PublicPage | null>(currentPublicPage);
   const [accountKey, setAccountKey] = useState<number | null>(null);
   const [user, setUser] = useState<CurrentUser | null>(null);
@@ -2538,11 +2644,29 @@ function App() {
   );
 
   useEffect(() => {
+    function captureVerificationLink() {
+      if (window.location.pathname !== `${import.meta.env.BASE_URL}verify-email`
+        || !window.location.hash) return;
+      const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
+      setVerificationToken(token && /^[A-Za-z0-9_-]{43}$/.test(token) ? token : null);
+      setVerificationVisit((value) => value + 1);
+      setView("verify-email");
+      setPublicPage(null);
+      // The token lives only in component memory, never history or storage.
+      window.history.replaceState({ jobComparerView: "verify-email" }, "",
+        `${import.meta.env.BASE_URL}verify-email`);
+    }
+    captureVerificationLink();
+    window.addEventListener("hashchange", captureVerificationLink);
+    return () => window.removeEventListener("hashchange", captureVerificationLink);
+  }, []);
+
+  useEffect(() => {
     function restorePublicNavigation(event: PopStateEvent) {
       setPublicPage(currentPublicPage());
       const previousView: unknown = event.state?.jobComparerView;
       if (typeof previousView === "string" && appViews.includes(previousView as View)) {
-        const requiresSession = !["home", "login", "signup"].includes(previousView);
+        const requiresSession = !["home", "login", "signup", "check-email", "verify-email"].includes(previousView);
         setView(requiresSession && (!accountKey || !user) ? "home" : previousView as View);
       }
     }
@@ -2619,11 +2743,14 @@ function App() {
       if (controller.signal.aborted || request !== authRequest.current) return;
       setUser(currentUser);
       setAccountKey(request);
-      setView("dashboard");
+      setView((current) => current === "verify-email" ? current : "dashboard");
       setAuthLoading(false);
     }, (caught: unknown) => {
       if (controller.signal.aborted || request !== authRequest.current) return;
-      if (!(caught instanceof ApiError && caught.status === 401)) {
+      if (caught instanceof ApiError && caught.code === "email_verification_required") {
+        setVerificationEmail(caught.email ?? "");
+        setView((current) => current === "verify-email" ? current : "check-email");
+      } else if (!(caught instanceof ApiError && caught.status === 401)) {
         setAuthError("Unable to check your session. Please retry.");
       }
       setAuthLoading(false);
@@ -2637,8 +2764,19 @@ function App() {
       setError("Your session has expired. Please log in again.");
       setView("login");
     }
+    function unverified(event: Event) {
+      clearPrivateSession();
+      const email: unknown = (event as CustomEvent).detail;
+      setVerificationEmail(typeof email === "string" ? email : "");
+      setVerificationSent(false);
+      setView("check-email");
+    }
     window.addEventListener("session-expired", expired);
-    return () => window.removeEventListener("session-expired", expired);
+    window.addEventListener("verification-required", unverified);
+    return () => {
+      window.removeEventListener("session-expired", expired);
+      window.removeEventListener("verification-required", unverified);
+    };
   }, []);
 
   useEffect(() => {
@@ -2674,6 +2812,11 @@ function App() {
       }
     } catch (caught) {
       if (request !== authRequest.current) return;
+      if (caught instanceof ApiError && caught.code === "email_verification_required") {
+        setVerificationEmail(email); setVerificationSent(false);
+        setView("check-email");
+        return;
+      }
       setError(
         caught instanceof ApiError
           ? caught.message
@@ -2816,8 +2959,13 @@ function App() {
     setIsSubmitting(true);
     try {
       await signUp(email, password);
-      setView("login");
+      setVerificationEmail(email); setVerificationSent(true);
+      setView("check-email");
     } catch (caught) {
+      if (caught instanceof ApiError && caught.code === "email_delivery_failed") {
+        setVerificationEmail(email); setVerificationSent(false);
+        setView("check-email");
+      }
       setError(
         caught instanceof ApiError
           ? caught.message
@@ -2891,6 +3039,9 @@ function App() {
     setView("comparisons");
   }
   function openLogin() {
+    if (window.location.pathname === `${import.meta.env.BASE_URL}verify-email`) {
+      window.history.replaceState({ jobComparerView: "login" }, "", import.meta.env.BASE_URL);
+    }
     setError(null);
     setView("login");
   }
@@ -2967,6 +3118,17 @@ function App() {
           }}>Retry session</button>
         </div> : <p role="status">Checking your session…</p>}
       </main>
+    </PageFrame>
+  );
+  if (view === "verify-email" || view === "check-email") return (
+    <PageFrame {...pageFrameProps}>
+      {view === "verify-email" ? <VerifyEmailView key={verificationVisit} token={verificationToken}
+        onVerified={() => setVerificationToken(null)} onLogin={openLogin}
+        onResend={() => { setError(null); setVerificationSent(false); setView("check-email"); }}
+        onBack={() => { openLogin(); setView("home"); }} />
+        : <CheckEmailView email={verificationEmail} initialError={error}
+          sent={verificationSent} onLogin={openLogin}
+          onBack={() => { openLogin(); setView("home"); }} />}
     </PageFrame>
   );
   if (view === "login")

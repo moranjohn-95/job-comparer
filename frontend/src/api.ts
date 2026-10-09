@@ -44,9 +44,15 @@ export type ComparisonResult = {
 
 export class ApiError extends Error {
   status?: number
-  constructor(message: string, status?: number) {
+  code?: string
+  email?: string
+  retryAfter?: number
+  constructor(message: string, status?: number, code?: string, email?: string, retryAfter?: number) {
     super(message)
     this.status = status
+    this.code = code
+    this.email = email
+    this.retryAfter = retryAfter
   }
 }
 
@@ -70,33 +76,65 @@ async function apiFetch(
   if (response.status === 401 && notifyExpiry) {
     window.dispatchEvent(new Event('session-expired'))
   }
+  if (response.status === 403 && notifyExpiry) {
+    const error = await getApiError(response.clone())
+    if (generation !== sessionGeneration || options.signal?.aborted) {
+      throw new DOMException('Inactive session', 'AbortError')
+    }
+    if (error.code === 'email_verification_required') {
+      window.dispatchEvent(new CustomEvent('verification-required', { detail: error.email }))
+    }
+  }
   return response
 }
 
-async function getErrorMessage(response: Response): Promise<string> {
+async function getApiError(response: Response): Promise<ApiError> {
   const body: unknown = await response.json().catch(() => null)
-  if (typeof body === 'object' && body !== null && 'detail' in body && typeof body.detail === 'string') return body.detail
-  return 'The request could not be completed. Please try again.'
+  const detail = typeof body === 'object' && body !== null && 'detail' in body ? body.detail : null
+  const fields = typeof detail === 'object' && detail !== null ? detail as Record<string, unknown> : {}
+  const retryAfter = Number(response.headers?.get('Retry-After'))
+  return new ApiError(typeof detail === 'string' ? detail
+    : typeof fields.message === 'string' ? fields.message
+      : 'The request could not be completed. Please try again.', response.status,
+    typeof fields.code === 'string' ? fields.code : undefined,
+    typeof fields.email === 'string' ? fields.email : undefined,
+    Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined)
+}
+
+export async function resendVerification(email: string, signal?: AbortSignal): Promise<void> {
+  const response = await apiFetch(`${API_URL}/verification/resend`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }), signal,
+  }, false)
+  if (!response.ok) throw await getApiError(response)
+}
+
+export async function confirmEmail(token: string, password: string, signal?: AbortSignal): Promise<void> {
+  const response = await apiFetch(`${API_URL}/verification/confirm`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, password }), signal,
+  }, false)
+  if (!response.ok) throw await getApiError(response)
 }
 
 export async function signIn(email: string, password: string): Promise<void> {
   const response = await apiFetch(`${API_URL}/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }, false)
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
 }
 
 export async function signOut(): Promise<void> {
   const response = await apiFetch(`${API_URL}/logout`, { method: 'POST' }, false)
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
 }
 
 export async function signUp(email: string, password: string): Promise<void> {
   const response = await apiFetch(`${API_URL}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }, false)
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
 }
 
 export async function getCurrentUser(signal?: AbortSignal): Promise<CurrentUser> {
   const response = await apiFetch(`${API_URL}/me`, { signal }, false)
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) throw new ApiError('Unable to sign in. Please try again.')
   const user = body as Record<string, unknown>
@@ -111,7 +149,7 @@ export async function getSavedCv(
     method: 'GET', signal,
   })
   if (response.status === 404) return null
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (
     response.status === 206 || typeof body !== 'object' || body === null ||
@@ -129,7 +167,7 @@ export async function saveCvText(
     body: JSON.stringify({ text }),
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
 }
 
 export async function uploadCv(
@@ -142,7 +180,7 @@ export async function uploadCv(
     body: form,
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (
     typeof body !== 'object' || body === null ||
@@ -165,7 +203,7 @@ export async function createJob(
     body: JSON.stringify(job),
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) {
     throw new ApiError('The job could not be saved. Please try again.')
@@ -192,7 +230,7 @@ export async function getJobs(
     method: 'GET',
     signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (response.status === 206 || !Array.isArray(body)) {
     throw new ApiError('The jobs response was invalid. Please try again.')
@@ -222,7 +260,7 @@ export async function getJob(
     signal,
   })
   if (response.status === 404) return null
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   if (typeof body !== 'object' || body === null) {
     throw new ApiError('The job response was invalid. Please try again.')
@@ -247,7 +285,7 @@ export async function compareJob(
   const response = await apiFetch(`${API_URL}/jobs/${jobId}/compare`, {
     method: 'POST',
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   const savedId = response.headers?.get('X-Comparison-Id')
   const comparisonId = savedId && /^[1-9]\d*$/.test(savedId)
@@ -314,7 +352,7 @@ export async function getComparisonSummaries(
   const response = await apiFetch(`${API_URL}/comparisons`, {
     method: 'GET', signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
   const invalid = 'The comparison history response was invalid. Please retry.'
   if (response.status === 206 || !Array.isArray(body)) {
@@ -344,7 +382,7 @@ export async function getSavedComparisons(
   const response = await apiFetch(`${API_URL}/jobs/${jobId}/comparisons`, {
     method: 'GET', signal,
   })
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   if (response.status === 206) {
     throw new ApiError('The saved comparison history was incomplete. Please retry.')
   }
@@ -362,7 +400,7 @@ export async function getSavedComparison(
     `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
     { method: 'GET', signal },
   )
-  if (!response.ok) throw new ApiError(await getErrorMessage(response), response.status)
+  if (!response.ok) throw await getApiError(response)
   const entry = parseSavedComparison(await response.json(), jobId)
   if (entry.id !== comparisonId) {
     throw new ApiError('The saved comparison response was invalid.')

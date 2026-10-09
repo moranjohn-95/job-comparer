@@ -25,6 +25,34 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class VerificationToken(Base):
+    __tablename__ = "verification_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_verification_token_hash"),
+        Index("ix_verification_tokens_user_purpose", "user_id", "purpose"),
+        Index("ix_verification_tokens_expires_at", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AuthSession(Base):
@@ -56,6 +84,9 @@ class AuthRateLimitCounter(Base):
 
     counter_key: Mapped[str] = mapped_column(String(255), primary_key=True)
     attempt_count: Mapped[int] = mapped_column(nullable=False)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class SavedCV(Base):
