@@ -4,12 +4,14 @@ from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import re
 from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 import jwt
 from conftest import BrowserClient as TestClient, signup_verified
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, literal, select, update
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
@@ -27,11 +29,28 @@ from auth_rate_limit import (
 from database import get_engine
 from main import app, client_ip
 import main
+import auth_rate_limit
 import email_verification
 import mail_delivery
 from models import AuthRateLimitCounter, AuthSession, User, VerificationToken
 
 PASSWORD = "correct-horse-battery-123"
+
+
+@pytest.fixture(autouse=True)
+def default_email_limits(monkeypatch):
+    monkeypatch.delenv("VERIFICATION_EMAIL_APP_HOURLY_LIMIT", raising=False)
+    monkeypatch.delenv("VERIFICATION_EMAIL_APP_DAILY_LIMIT", raising=False)
+
+
+def email_capacity():
+    with Session(get_engine()) as db:
+        return dict(db.execute(select(
+            AuthRateLimitCounter.counter_key,
+            AuthRateLimitCounter.attempt_count,
+        ).where(AuthRateLimitCounter.counter_key.startswith(
+            "verification-send:app:"
+        ))).all())
 
 
 def emailed_token(client, email):
@@ -192,16 +211,137 @@ def test_resend_is_generic_and_has_persistent_cooldown(client, email):
     })
     assert known.status_code == unknown.status_code == 202
     assert known.json() == unknown.json()
+    capacity = email_capacity()
     with TestClient(app) as another_worker:
         limited = another_worker.post("/verification/resend", json={
             "email": email,
         })
     assert limited.status_code == 429
     assert limited.headers["Retry-After"] == "60"
+    assert email_capacity() == capacity
     end_email_cooldown()
     assert client.post("/verification/resend", json={
         "email": email,
     }).status_code == 202
+
+
+def test_signup_and_guidance_resends_share_global_capacity(
+    client, email, monkeypatch
+):
+    monkeypatch.setenv("VERIFICATION_EMAIL_APP_HOURLY_LIMIT", "3")
+    signup(client, email)
+    end_email_cooldown()
+    # An already-verified account and an unknown address both get guidance.
+    assert client.post("/verification/resend", json={
+        "email": email,
+    }).status_code == 202
+    assert client.post("/verification/resend", json={
+        "email": f"unknown-{uuid4().hex}@example.com",
+    }).status_code == 202
+    end_email_cooldown()
+    known = client.post("/signup", json={
+        "email": email, "password": PASSWORD,
+    })
+    unknown = client.post("/verification/resend", json={
+        "email": f"unknown-{uuid4().hex}@example.com",
+    })
+    assert known.status_code == unknown.status_code == 429
+    assert known.json() == unknown.json()
+    assert known.json()["detail"]["code"] == (
+        "verification_global_rate_limited"
+    )
+    assert len(client.outbox) == 3
+    assert sorted(email_capacity().values()) == [3, 3]
+
+
+def test_email_hour_and_utc_day_windows(client, monkeypatch):
+    monkeypatch.setenv("VERIFICATION_EMAIL_APP_HOURLY_LIMIT", "1")
+    monkeypatch.setenv("VERIFICATION_EMAIL_APP_DAILY_LIMIT", "2")
+    now = [datetime(2026, 1, 1, 12, 59, tzinfo=timezone.utc)]
+    monkeypatch.setattr(auth_rate_limit, "func", SimpleNamespace(
+        clock_timestamp=lambda: literal(now[0]), timezone=func.timezone,
+    ))
+
+    def send():
+        return client.post("/verification/resend", json={
+            "email": f"window-{uuid4().hex}@example.com",
+        }).status_code
+
+    assert send() == 202
+    capacity = email_capacity()
+    assert capacity == {
+        "verification-send:app:HOURLY:2026-01-01T12:00:00": 1,
+        "verification-send:app:DAILY:2026-01-01T00:00:00": 1,
+    }
+    assert send() == 429
+    assert email_capacity() == capacity
+    now[0] = now[0].replace(hour=13, minute=0)
+    assert send() == 202
+    capacity = email_capacity()
+    now[0] = now[0].replace(hour=14)
+    assert send() == 429
+    # The rejected daily reservation must roll back the new hour's counter.
+    assert email_capacity() == capacity
+    now[0] = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert send() == 202
+    assert len(client.outbox) == 3
+
+
+@pytest.mark.parametrize("limiting_period", ["HOURLY", "DAILY"])
+def test_email_capacity_is_atomic_across_workers(
+    monkeypatch, mail_outbox, limiting_period
+):
+    monkeypatch.setenv(f"VERIFICATION_EMAIL_APP_{limiting_period}_LIMIT", "2")
+    barrier = Barrier(6)
+
+    def send(index):
+        with TestClient(app, client=(f"198.51.100.{index + 1}", 50000)) as c:
+            barrier.wait(timeout=10)
+            return c.post("/verification/resend", json={
+                "email": f"concurrent-{uuid4().hex}@example.com",
+            }).status_code
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        results = sorted(pool.map(send, range(6)))
+    assert results == [202, 202, 429, 429, 429, 429]
+    assert len(mail_outbox) == 2
+    assert sorted(email_capacity().values()) == [2, 2]
+
+
+def test_uncertain_mail_delivery_keeps_committed_capacity(client, monkeypatch):
+    monkeypatch.setenv("VERIFICATION_EMAIL_APP_HOURLY_LIMIT", "1")
+    attempts = []
+
+    def fail_delivery(*args):
+        # A separate connection sees both reservations before SMTP starts.
+        assert sorted(email_capacity().values()) == [1, 1]
+        attempts.append(1)
+        raise mail_delivery.MailDeliveryError("Uncertain test delivery")
+
+    monkeypatch.setattr(email_verification, "send_email", fail_delivery)
+    assert client.post("/verification/resend", json={
+        "email": f"failure-{uuid4().hex}@example.com",
+    }).status_code == 503
+    assert client.post("/verification/resend", json={
+        "email": f"failure-{uuid4().hex}@example.com",
+    }).status_code == 429
+    assert attempts == [1]
+    assert sorted(email_capacity().values()) == [1, 1]
+
+
+@pytest.mark.parametrize("period,value", [
+    ("HOURLY", "0"), ("DAILY", "-1"), ("HOURLY", "1.5"),
+    ("DAILY", ""), ("HOURLY", "invalid"), ("DAILY", "2147483648"),
+])
+def test_invalid_email_limits_fail_closed(client, monkeypatch, period, value):
+    monkeypatch.setenv(f"VERIFICATION_EMAIL_APP_{period}_LIMIT", value)
+    response = client.post("/verification/resend", json={
+        "email": f"config-{uuid4().hex}@example.com",
+    })
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "email_delivery_failed"
+    assert client.outbox == []
+    assert email_capacity() == {}
 
 
 def test_verification_password_attempts_are_limited(client, email):
@@ -445,6 +585,7 @@ def test_signup_limit_is_per_ip(client: TestClient) -> None:
         )
         assert response.status_code == 202
 
+    capacity = email_capacity()
     response = client.post(
         "/signup",
         json={
@@ -454,6 +595,7 @@ def test_signup_limit_is_per_ip(client: TestClient) -> None:
     )
 
     assert response.status_code == 429
+    assert email_capacity() == capacity
     assert response.json() == {
         "detail": "Too many authentication attempts. Please try again later."
     }

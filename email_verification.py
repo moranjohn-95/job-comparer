@@ -12,11 +12,34 @@ from sqlalchemy.orm import Session
 
 from auth import verify_password
 from auth_http import get_auth_settings
+from auth_rate_limit import reserve_auth_attempts
 from auth_sessions import revoke_user_sessions
 from mail_delivery import MailDeliveryError, send_email
 from models import User, VerificationToken
 
 PURPOSE = "email_verification"
+
+
+def verification_send_limits() -> tuple[tuple[str, int, timedelta], ...]:
+    attempts = []
+    for period, default, window in (
+        ("HOURLY", 20, timedelta(hours=1)),
+        ("DAILY", 50, timedelta(days=1)),
+    ):
+        name = f"VERIFICATION_EMAIL_APP_{period}_LIMIT"
+        raw = os.getenv(name, str(default))
+        try:
+            if re.fullmatch(r"[0-9]+", raw) is None:
+                raise ValueError
+            limit = int(raw)
+            if not 1 <= limit <= 2_147_483_647:
+                raise ValueError
+        except ValueError:
+            raise MailDeliveryError(
+                f"{name} must be a whole number between 1 and 2147483647"
+            ) from None
+        attempts.append((f"verification-send:app:{period}", limit, window))
+    return tuple(attempts)
 
 
 def verification_lifetime() -> timedelta:
@@ -79,6 +102,7 @@ def send_verification_email(db: Session, email: str) -> None:
     """
     base = public_frontend_url()
     verification_lifetime()
+    limits = verification_send_limits()
     user = db.scalar(select(User).where(User.email == email).with_for_update())
     if user is not None and user.email_verified_at is None:
         token, lifetime = issue_verification(db, user)
@@ -95,7 +119,10 @@ def send_verification_email(db: Session, email: str) -> None:
             f"Visit {base} to sign in or create an account. "
             "If your email is already verified, you can sign in.\n"
         )
-    db.commit()
+    # Atomically commit both global counters and any token before SMTP.
+    # Existing route limits/cooldowns have already passed. Never refund an
+    # uncertain/failed delivery or retry automatically.
+    reserve_auth_attempts(db, limits)
     send_email(email, "Job Comparer email verification", body + (
         "\nIf you did not sign up or request this email, ignore it. "
         "Do not enter a password supplied by someone else."

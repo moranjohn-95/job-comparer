@@ -21,11 +21,10 @@ class AuthRateLimitReached(Exception):
 
 
 def _window_start(now: datetime, window: timedelta) -> datetime:
-    seconds = int(window.total_seconds())
-    timestamp = int(now.timestamp())
-    return datetime.fromtimestamp(
-        timestamp - timestamp % seconds, tz=now.tzinfo
-    )
+    # The database supplies naive UTC. Avoid timestamp(), which interprets
+    # naive datetimes in the worker's local timezone.
+    epoch = datetime(1970, 1, 1, tzinfo=now.tzinfo)
+    return epoch + ((now - epoch) // window) * window
 
 
 def _counter_key(scope: str, window_start: datetime) -> str:

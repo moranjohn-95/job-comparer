@@ -333,6 +333,12 @@ def reserve_email_delivery(session: Session, email: str, ip: str) -> None:
 def deliver_verification(session: Session, email: str) -> dict[str, str]:
     try:
         send_verification_email(session, email)
+    except AuthRateLimitReached:
+        raise HTTPException(status_code=429, detail={
+            "code": "verification_global_rate_limited",
+            "message": "Email sending is temporarily limited for everyone. "
+                       "Please try again later.",
+        }) from None
     except MailDeliveryError:
         raise HTTPException(status_code=503, detail={
             "code": "email_delivery_failed",
