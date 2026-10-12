@@ -8,6 +8,10 @@ import {
   within,
 } from "@testing-library/react";
 import App from "./App";
+import {
+  deleteSavedComparison, getComparisonSummaries, getSavedComparison,
+  getSavedComparisons, resetSessionRequests,
+} from "./api";
 
 // Most existing journeys begin signed out. Keep their endpoint mocks intact
 // while modelling the new initial /me request explicitly.
@@ -34,9 +38,27 @@ async function renderSignedOutApp() {
 
 afterEach(() => {
   cleanup();
+  if (mockedDialog) {
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "showModal");
+    Reflect.deleteProperty(HTMLDialogElement.prototype, "close");
+    mockedDialog = false;
+  }
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
 });
+
+let mockedDialog = false;
+
+// jsdom has no native dialog implementation. Browser checks cover its focus
+// containment; these shims exercise our opening, cancellation and restoration.
+function enableDialogMock() {
+  if ("showModal" in HTMLDialogElement.prototype) return;
+  mockedDialog = true;
+  Object.defineProperties(HTMLDialogElement.prototype, {
+    showModal: { configurable: true, value(this: HTMLDialogElement) { this.open = true; } },
+    close: { configurable: true, value(this: HTMLDialogElement) { this.open = false; } },
+  });
+}
 
 test("restores the cookie session on startup without replaying mutations", async () => {
   const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(
@@ -1469,4 +1491,167 @@ test("opens saved comparison categories and returns without comparing", async ()
   expect(fetchMock.mock.calls.filter(([url, init]) =>
     String(url).endsWith("/compare") && init?.method === "POST",
   )).toHaveLength(0);
+});
+
+const deletionJob = { id: 7, title: "Researcher", company_name: "North Lab" };
+const deletionSummaries = [42, 43].map((id) => ({
+  id, job_id: 7, job_title: deletionJob.title,
+  company_name: deletionJob.company_name,
+  created_at: `2026-10-0${id - 40}T10:30:00Z`,
+  matched_requirements_count: 1, possible_gaps_count: 1, needs_review_count: 0,
+}));
+const deletionDetails = deletionSummaries.map((entry) => ({
+  id: entry.id, job_id: 7, created_at: entry.created_at,
+  cv_outdated: false, result: comparisonResult,
+}));
+
+async function renderDeletionHistory(
+  remove: () => Promise<Response>, count = 2,
+) {
+  enableDialogMock();
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "DELETE") return remove();
+    // Deliberately return pre-delete data on subsequent reads to exercise
+    // stale-response suppression as well as invalidation of mounted caches.
+    if (url === "/api/comparisons") return Promise.resolve(Response.json(deletionSummaries.slice(0, count)));
+    if (url === "/api/jobs/7/comparisons") return Promise.resolve(Response.json(deletionDetails.slice(0, count)));
+    if (url === "/api/jobs") return Promise.resolve(Response.json([deletionJob]));
+    if (url === "/api/jobs/7") return Promise.resolve(Response.json({ ...deletionJob, description: "Saved job description" }));
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await renderSignedOutApp();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Start a comparison" });
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByRole("list", { name: "Saved comparisons" });
+  return fetchMock;
+}
+
+function openDeleteDialog() {
+  const trigger = screen.getByRole("button", { name: /Delete comparison.*comparison 42/ });
+  fireEvent.click(trigger);
+  return { trigger, dialog: screen.getByRole("dialog", { name: "Delete comparison?" }) };
+}
+
+test("confirms the selected comparison and cancels without deleting, restoring focus", async () => {
+  const remove = vi.fn();
+  await renderDeletionHistory(remove);
+  const { trigger, dialog } = openDeleteDialog();
+  expect(dialog).toHaveTextContent("Researcher at North Lab");
+  expect(dialog).toHaveTextContent("Comparison 42");
+  expect(dialog).toHaveTextContent("Your saved job and CV will remain. You can’t undo this action.");
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+  fireEvent.click(trigger);
+  fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(trigger).toHaveFocus();
+  expect(remove).not.toHaveBeenCalled();
+  expect(screen.getAllByRole("button", { name: /Delete comparison for/ })).toHaveLength(2);
+});
+
+test("deletes the exact comparison without parsing 204 and refreshes summaries and cached history", async () => {
+  const response = new Response(null, { status: 204 });
+  const parse = vi.spyOn(response, "json");
+  const fetchMock = await renderDeletionHistory(async () => response);
+  // Populate the per-job history cache before deleting from Comparisons.
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(await screen.findByRole("button", { name: /View job: Researcher/ }));
+  await waitFor(() => expect(screen.getAllByRole("button", { name: /View comparison:/ })).toHaveLength(2));
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByRole("list", { name: "Saved comparisons" });
+  const { dialog } = openDeleteDialog();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete comparison" }));
+  expect(await screen.findByText("Comparison deleted.")).toHaveAttribute("role", "status");
+  expect(screen.queryByRole("button", { name: /Delete comparison.*comparison 42/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Delete comparison.*comparison 43/ })).toBeVisible();
+  expect(screen.getByRole("heading", { name: "Comparisons" })).toHaveFocus();
+  const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
+  expect(writes).toHaveLength(1);
+  expect(writes[0][0]).toBe("/api/jobs/7/comparisons/42");
+  expect(writes[0][1]?.credentials).toBe("include");
+  expect(new Headers(writes[0][1]?.headers).get("X-CSRF-Protection")).toBe("1");
+  expect(parse).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  const summary = screen.getByRole("link", { name: /^Comparisons/ });
+  await waitFor(() => expect(within(summary).getByText("1")).toBeVisible());
+  expect(within(screen.getByRole("link", { name: /^Saved jobs/ })).getByText("1")).toBeVisible();
+  expect(within(screen.getByRole("link", { name: /^My CV/ })).getByText("Saved")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  await waitFor(() => expect(screen.getAllByRole("button", { name: /View comparison:/ })).toHaveLength(1));
+  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/jobs/7/comparisons")).toHaveLength(2);
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByRole("list", { name: "Saved comparisons" });
+  expect(screen.getAllByRole("button", { name: /Delete comparison for/ })).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([, init]) => !["GET", "DELETE", "POST"].includes(init?.method ?? "GET"))).toHaveLength(0);
+  expect(fetchMock.mock.calls.filter(([url, init]) => init?.method === "POST" && url !== "/api/login")).toHaveLength(0);
+});
+
+test("keeps the comparison during pending and error states, then retries to the empty state", async () => {
+  let finish!: (response: Response) => void;
+  const remove = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+  await renderDeletionHistory(remove, 1);
+  const { dialog } = openDeleteDialog();
+  const confirm = within(dialog).getByRole("button", { name: "Delete comparison" });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(within(dialog).getByRole("button", { name: "Deleting…" })).toBeDisabled();
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toBeDisabled();
+  expect(within(dialog).getByRole("status")).toHaveTextContent("Deleting comparison");
+  fireEvent(dialog, new Event("cancel", { cancelable: true }));
+  expect(dialog).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /Delete comparison.*comparison 42/ })).toBeInTheDocument();
+  finish(Response.json({ detail: "Service temporarily unavailable" }, { status: 503 }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Service temporarily unavailable");
+  expect(screen.getByRole("button", { name: /Delete comparison.*comparison 42/ })).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete comparison" }));
+  expect(remove).toHaveBeenCalledTimes(2);
+  finish(new Response(null, { status: 204 }));
+  expect(await screen.findByText("You have no saved comparisons yet.")).toBeVisible();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("reconciles a missing comparison and explains why it disappeared", async () => {
+  await renderDeletionHistory(async () => new Response(null, { status: 404 }), 1);
+  const { dialog } = openDeleteDialog();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete comparison" }));
+  expect(await screen.findByText("This comparison is no longer available. The list has been updated.")).toHaveAttribute("role", "status");
+  expect(screen.getByText("You have no saved comparisons yet.")).toBeVisible();
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+});
+
+test("ignores late pre-delete summary, history and detail responses only in their own session", async () => {
+  resetSessionRequests();
+  const finish: Array<() => void> = [];
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method === "DELETE") return Promise.resolve(new Response(null, { status: 204 }));
+    const url = String(input);
+    const value = url === "/api/comparisons" ? deletionSummaries
+      : url.endsWith("/42") ? deletionDetails[0] : deletionDetails;
+    return Promise.resolve({ ok: true, json: () => new Promise((resolve) => {
+      finish.push(() => resolve(value));
+    }) });
+  }));
+  const signal = new AbortController().signal;
+  const summary = getComparisonSummaries(signal);
+  const history = getSavedComparisons(7, signal);
+  const detail = getSavedComparison(7, 42, signal);
+  const unavailable = expect(detail).rejects.toMatchObject({ status: 404 });
+  await waitFor(() => expect(finish).toHaveLength(3));
+  await deleteSavedComparison(7, 42, signal);
+  finish.forEach((resolve) => resolve());
+  expect((await summary).map((entry) => entry.id)).toEqual([43]);
+  expect((await history).map((entry) => entry.id)).toEqual([43]);
+  await unavailable;
+  resetSessionRequests();
+  const nextSession = getComparisonSummaries(signal);
+  await waitFor(() => expect(finish).toHaveLength(4));
+  finish[3]();
+  expect((await nextSession).map((entry) => entry.id)).toEqual([42, 43]);
 });

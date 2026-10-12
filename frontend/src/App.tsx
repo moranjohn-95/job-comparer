@@ -7,6 +7,7 @@ import {
   type DragEvent,
   type FormEvent,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ApiError,
@@ -19,6 +20,7 @@ import {
   getSavedComparisons,
   getSavedComparison,
   getComparisonSummaries,
+  deleteSavedComparison,
   getSavedCv,
   signIn,
   signOut,
@@ -68,6 +70,7 @@ type ComparisonRun = {
   error: string | null;
   version: number;
   cvOutdated?: boolean;
+  comparisonId?: number | null;
 };
 type ComparisonOutcome = {
   result: ComparisonResult; comparisonId: number | null;
@@ -99,7 +102,7 @@ type JobHistoryCache = Map<number, {
 }>;
 type IconName =
   | "grid" | "briefcase" | "document" | "arrows" | "login" | "logout"
-  | "plus" | "arrow-right" | "arrow-left";
+  | "plus" | "arrow-right" | "arrow-left" | "bin";
 type DraftProps = {
   cvFile: File | null;
   cvText: string;
@@ -149,6 +152,9 @@ function Icon({ name }: { name: IconName }): ReactNode {
     strokeWidth: 1.7,
   };
   const paths: Record<IconName, ReactNode> = {
+    bin: <>
+      <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
+    </>,
     plus: <path d="M12 5v14M5 12h14" />,
     "arrow-right": <path d="M4 12h16M14 6l6 6-6 6" />,
     "arrow-left": <path d="M20 12H4M10 6l-6 6 6 6" />,
@@ -2010,9 +2016,78 @@ function DashboardOverview({ accountKey, onNavigate, onView, onCvSaved, onJobSav
   );
 }
 
-function ComparisonsView({ accountKey, historyCache }: {
+function DeleteComparisonDialog({ entry, trigger, fallback, onCancel, onDeleted }: {
+  entry: ComparisonSummary;
+  trigger: RefObject<HTMLButtonElement | null>;
+  fallback: RefObject<HTMLHeadingElement | null>;
+  onCancel: () => void;
+  onDeleted: (outcome: "deleted" | "missing") => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const request = useRef<AbortController | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const modal = dialog.current!;
+    modal.showModal();
+    cancel.current?.focus();
+    const opener = trigger.current;
+    const fallbackHeading = fallback.current;
+    return () => {
+      request.current?.abort();
+      modal.close();
+      if (opener?.isConnected) opener.focus();
+      else fallbackHeading?.focus();
+    };
+  }, [trigger, fallback]);
+
+  async function remove() {
+    if (request.current) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setPending(true);
+    setError(null);
+    try {
+      const outcome = await deleteSavedComparison(entry.job_id, entry.id, controller.signal);
+      if (!controller.signal.aborted) onDeleted(outcome);
+    } catch (caught) {
+      if (!controller.signal.aborted) {
+        setError(caught instanceof ApiError ? caught.message : "Please try again.");
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        request.current = null;
+        setPending(false);
+      }
+    }
+  }
+
+  return <dialog ref={dialog} className="comparison-delete-dialog"
+    aria-labelledby="comparison-delete-title" aria-describedby="comparison-delete-description"
+    onCancel={(event) => {
+      event.preventDefault();
+      if (!request.current) onCancel();
+    }}>
+    <h2 id="comparison-delete-title">Delete comparison?</h2>
+    <p className="comparison-delete-identity"><strong>{entry.job_title}</strong> at {entry.company_name}
+      <br />{new Date(entry.created_at).toLocaleString()} · Comparison {entry.id}</p>
+    <p id="comparison-delete-description">This removes this saved comparison and its results. Your saved job and CV will remain. You can’t undo this action.</p>
+    {error && <p className="form-error" role="alert">Could not delete the comparison: {error} Your saved comparison has not been removed from this list. Try Delete comparison again.</p>}
+    {pending && <p role="status">Deleting comparison…</p>}
+    <div className="comparison-delete-dialog__actions">
+      <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>Cancel</button>
+      <button type="button" className="cv-save comparison-delete-confirm" disabled={pending}
+        onClick={() => void remove()}>{pending ? "Deleting…" : "Delete comparison"}</button>
+    </div>
+  </dialog>;
+}
+
+function ComparisonsView({ accountKey, historyCache, onDeleted }: {
   accountKey: number;
   historyCache: JobHistoryCache;
+  onDeleted: (entry: ComparisonSummary) => void;
 }) {
   const [entries, setEntries] = useState<ComparisonSummary[]>([]);
   const [sortOrder, setSortOrder] = useState<"newest" | "oldest">("newest");
@@ -2020,6 +2095,17 @@ function ComparisonsView({ accountKey, historyCache }: {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [deleting, setDeleting] = useState<ComparisonSummary | null>(null);
+  const [notice, setNotice] = useState("");
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const removedIds = useRef(new Set<number>());
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2027,7 +2113,7 @@ function ComparisonsView({ accountKey, historyCache }: {
     void getComparisonSummaries(controller.signal).then(
       (result) => {
         if (!active) return;
-        setEntries(result);
+        setEntries(result.filter((entry) => !removedIds.current.has(entry.id)));
         setLoading(false);
       },
       (caught: unknown) => {
@@ -2067,7 +2153,7 @@ function ComparisonsView({ accountKey, historyCache }: {
       className="main-content jobs-page jobs-list-page comparison-history-page"
     >
       <div className="jobs-heading">
-        <h1>Comparisons</h1>
+        <h1 ref={heading} tabIndex={-1}>Comparisons</h1>
         <select
           className="history-order"
           aria-label="Sort comparison history"
@@ -2172,12 +2258,34 @@ function ComparisonsView({ accountKey, historyCache }: {
                     <span>View</span>
                     <Icon name="arrow-right" />
                   </button>
+                  <button type="button" className="comparison-delete-icon"
+                    title="Delete comparison"
+                    aria-label={`Delete comparison for ${entry.job_title} at ${entry.company_name}, ${new Date(entry.created_at).toLocaleString()} (comparison ${entry.id})`}
+                    onClick={(event) => {
+                      deleteTrigger.current = event.currentTarget;
+                      setNotice("");
+                      setDeleting(entry);
+                    }}>
+                    <Icon name="bin" />
+                  </button>
                 </div>
               </li>
             ))}
           </ul>
         )}
       </div>
+      <div className={notice ? "comparison-delete-notice" : "visually-hidden"} role="status" aria-live="polite">{notice}</div>
+      {deleting && <DeleteComparisonDialog entry={deleting}
+        trigger={deleteTrigger} fallback={heading}
+        onCancel={() => setDeleting(null)}
+        onDeleted={(outcome) => {
+          removedIds.current.add(deleting.id);
+          setEntries((current) => current.filter((entry) => entry.id !== deleting.id));
+          setDeleting(null);
+          setNotice(outcome === "deleted" ? "Comparison deleted."
+            : "This comparison is no longer available. The list has been updated.");
+          onDeleted(deleting);
+        }} />}
     </main>
   );
 }
@@ -2917,6 +3025,7 @@ function App() {
       [jobId]: {
         pending: true, error: null,
         result: current[jobId]?.result ?? null,
+        comparisonId: current[jobId]?.comparisonId,
         version: current[jobId]?.version ?? 0,
         cvOutdated: current[jobId]?.cvOutdated,
       },
@@ -2928,7 +3037,7 @@ function App() {
       setComparisonRuns((current) => ({
         ...current,
         [jobId]: {
-          pending: false, error: null, result,
+          pending: false, error: null, result, comparisonId,
           version: (current[jobId]?.version ?? 0) + 1,
           cvOutdated: cvVersion.current !== sourceVersion,
         },
@@ -2968,6 +3077,24 @@ function App() {
   function completeDashboardComparison(job: SavedJob, comparisonId: number) {
     setAnotherDashboardComparison(true);
     openDashboardComparison(job, comparisonId);
+  }
+  function handleComparisonDeleted(entry: ComparisonSummary) {
+    // Replace the cache so mounted readers cancel work using the old map.
+    setHistoryCache((current) => {
+      const next = new Map(current);
+      next.delete(entry.job_id);
+      return next;
+    });
+    setComparisonRuns((current) => {
+      const run = current[entry.job_id];
+      if (run?.comparisonId !== entry.id) return current;
+      return { ...current, [entry.job_id]: {
+        ...run, result: null, comparisonId: null, version: run.version + 1,
+      } };
+    });
+    setSavedComparisonId((current) => current === entry.id ? null : current);
+    setDashboardSelection((current) => current?.id === entry.id ? null : current);
+    setOverviewVersion((value) => value + 1);
   }
   async function handleSignup(
     email: string,
@@ -3342,6 +3469,7 @@ function App() {
             key={`${user.id}:${accountKey}:${comparisonVisit}`}
             accountKey={accountKey}
             historyCache={historyCache}
+            onDeleted={handleComparisonDeleted}
           />
         </Activity>
       )}

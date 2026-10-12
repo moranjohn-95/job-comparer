@@ -57,7 +57,11 @@ export class ApiError extends Error {
 }
 
 let sessionGeneration = 0
-export function resetSessionRequests(): void { sessionGeneration += 1 }
+let deletedComparisonIds = new Set<number>()
+export function resetSessionRequests(): void {
+  sessionGeneration += 1
+  deletedComparisonIds = new Set()
+}
 
 async function apiFetch(
   url: string, options: RequestInit = {}, notifyExpiry = true,
@@ -349,6 +353,7 @@ function parseSavedComparison(body: unknown, jobId: number): SavedComparison {
 export async function getComparisonSummaries(
   signal: AbortSignal,
 ): Promise<ComparisonSummary[]> {
+  const deleted = deletedComparisonIds
   const response = await apiFetch(`${API_URL}/comparisons`, {
     method: 'GET', signal,
   })
@@ -373,12 +378,13 @@ export async function getComparisonSummaries(
           && Number.isInteger(entry[field]) && entry[field] >= 0)
     ) throw new ApiError(invalid)
     return entry as ComparisonSummary
-  })
+  }).filter((entry) => !deleted.has(entry.id))
 }
 
 export async function getSavedComparisons(
   jobId: number, signal: AbortSignal,
 ): Promise<SavedComparison[]> {
+  const deleted = deletedComparisonIds
   const response = await apiFetch(`${API_URL}/jobs/${jobId}/comparisons`, {
     method: 'GET', signal,
   })
@@ -391,11 +397,13 @@ export async function getSavedComparisons(
     throw new ApiError('The saved comparisons response was invalid.')
   }
   return body.map((entry: unknown) => parseSavedComparison(entry, jobId))
+    .filter((entry) => !deleted.has(entry.id))
 }
 
 export async function getSavedComparison(
   jobId: number, comparisonId: number, signal: AbortSignal,
 ): Promise<SavedComparison> {
+  const deleted = deletedComparisonIds
   const response = await apiFetch(
     `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
     { method: 'GET', signal },
@@ -405,7 +413,27 @@ export async function getSavedComparison(
   if (entry.id !== comparisonId) {
     throw new ApiError('The saved comparison response was invalid.')
   }
+  if (deleted.has(comparisonId)) {
+    throw new ApiError('This comparison is no longer available.', 404)
+  }
   return entry
+}
+
+export async function deleteSavedComparison(
+  jobId: number, comparisonId: number, signal: AbortSignal,
+): Promise<'deleted' | 'missing'> {
+  // Keep this session's tombstones even when a pre-delete read finishes late.
+  // A new session gets a new set, so old requests cannot affect its state.
+  const deleted = deletedComparisonIds
+  const response = await apiFetch(
+    `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
+    { method: 'DELETE', signal },
+  )
+  if (response.status !== 204 && response.status !== 404) {
+    throw await getApiError(response)
+  }
+  deleted.add(comparisonId)
+  return response.status === 204 ? 'deleted' : 'missing'
 }
 
 export async function checkHealth(signal: AbortSignal): Promise<boolean> {
