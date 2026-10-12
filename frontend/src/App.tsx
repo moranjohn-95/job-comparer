@@ -2098,6 +2098,7 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
   const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [deletionOutcome, setDeletionOutcome] = useState<string | null>(null);
 
   useEffect(() => {
     const modal = dialog.current!;
@@ -2119,11 +2120,15 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
     request.current = controller;
     setPending(true);
     setError(null);
+    setDeletionOutcome(null);
     try {
       const outcome = await removeItem(controller.signal, password);
       if (!controller.signal.aborted) onDeleted(outcome);
     } catch (caught) {
       if (!controller.signal.aborted) {
+        setDeletionOutcome(kind === "account" && caught instanceof ApiError
+          && (caught.code === "deletion_pending" || caught.code === "deletion_unconfirmed")
+          ? caught.code : null);
         setError(caught instanceof ApiError ? caught.message
           : kind === "account"
           ? "The request could not be confirmed. Check your connection before trying again."
@@ -2163,12 +2168,18 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
         onChange={(event) => setPassword(event.target.value)} />
     </div>}
     {error && <p id="comparison-delete-error" className="form-error" role="alert">
-      {kind === "account" ? <>Account deletion was not confirmed. {error}</>
+      {deletionOutcome === "deletion_pending"
+        ? <>Your deletion request was recorded and cannot be cancelled. Database deletion has not been confirmed. Reconciliation is required; no automatic completion is scheduled. Closing this dialog does not cancel the request.</>
+        : deletionOutcome === "deletion_unconfirmed"
+        ? <>Your deletion request’s status could not be confirmed. It may have been recorded; a recorded request cannot be cancelled. Closing this dialog does not resolve its status.</>
+        : kind === "account" ? <>Account deletion was not confirmed. {error}</>
         : <>Could not delete the {kind}: {error} Your saved {kind} has not been removed from this {kind === "CV" ? "display" : "list"}. Try Delete {kind} again.</>}
     </p>}
     {pending && <p role="status">Deleting {kind}…</p>}
     <div className="comparison-delete-dialog__actions">
-      <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>Cancel</button>
+      <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>
+        {deletionOutcome ? "Close" : "Cancel"}
+      </button>
       <button type="submit" className="cv-save comparison-delete-confirm"
         disabled={pending || blocked || (kind === "account" && !password)}>
         {pending ? "Deleting…" : `Delete ${kind}`}</button>

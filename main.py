@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import os
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
@@ -65,6 +66,12 @@ from comparison import (
 )
 from cv_upload import MAX_UPLOAD_BYTES, extract_cv_text
 from database import get_session
+from deletion_ledger import (
+    AccountDeletionLedger,
+    LedgerError,
+    LedgerOutcomeUnknown,
+    LedgerRecordError,
+)
 from email_verification import (
     confirm_verification,
     send_verification_email,
@@ -74,6 +81,7 @@ from mail_delivery import MailDeliveryError
 from models import AIUsageCounter, ComparisonHistory, SavedCV, SavedJob, User
 
 auth_settings = get_auth_settings()
+logger = logging.getLogger(__name__)
 app = FastAPI()
 
 
@@ -501,7 +509,7 @@ def delete_account(
     user: User = Depends(current_user),
     session: Session = Depends(get_session),
 ) -> None:
-    user_id, email = user.id, user.email
+    user_id, email, account_uuid = user.id, user.email, user.account_uuid
     # Share the login password-attempt budget, across sessions and workers.
     # This reservation commits before the separate deletion transaction.
     try:
@@ -522,27 +530,82 @@ def delete_account(
         raise HTTPException(
             status_code=400, detail="Current password is incorrect.",
         )
+    intent_confirmed = False
     try:
+        # Keep the existing order: shared usage lock, then the account row.
         lock_usage(session)
-        # Match the verified hash too: a concurrent password change must not
-        # allow deletion using a password that is no longer current.
-        removed = session.scalar(delete(User).where(
-            User.id == user_id, User.password_hash == password_hash,
-        ).returning(User.id))
-        if removed is None:
+        locked_uuid = session.scalar(select(User.account_uuid).where(
+            User.id == user_id, User.account_uuid == account_uuid,
+            User.password_hash == password_hash,
+        ).with_for_update())
+        if locked_uuid is None:
             session.rollback()
             raise HTTPException(
                 status_code=409, detail="Account changed. Please retry.",
             )
+        ledger = AccountDeletionLedger()
+        ledger.record_intent(account_uuid)
+        # From here the authorised request is irrevocable, even on rollback.
+        intent_confirmed = True
+        removed = session.scalar(delete(User).where(
+            User.id == user_id, User.account_uuid == account_uuid,
+        ).returning(User.id))
+        if removed is None:
+            raise SQLAlchemyError("Locked account was not deleted")
         # Foreign keys cascade CVs, jobs, history, sessions and tokens.
         # Keep shared app usage and authentication/email anti-abuse limits.
         session.execute(delete(AIUsageCounter).where(
             AIUsageCounter.counter_key.startswith(f"user:{user_id}:")
         ))
         session.commit()
+    except (LedgerOutcomeUnknown, LedgerRecordError):
+        try:
+            session.rollback()
+        finally:
+            raise HTTPException(status_code=503, detail={
+                "code": "deletion_unconfirmed",
+                "message": "The deletion request's status could not be "
+                           "confirmed. It may have been recorded. "
+                           "A recorded request cannot be cancelled.",
+            }) from None
+    except LedgerError:
+        try:
+            session.rollback()
+        finally:
+            raise HTTPException(status_code=503, detail={
+                "code": "deletion_unavailable",
+                "message": "Account deletion is unavailable. This attempt "
+                           "did not proceed with database deletion.",
+            }) from None
     except SQLAlchemyError:
-        session.rollback()
-        raise
+        # A commit connection failure can be ambiguous. Never claim the
+        # account still exists or that deletion completed in this response.
+        try:
+            session.rollback()
+        finally:
+            if intent_confirmed:
+                raise HTTPException(status_code=503, detail={
+                    "code": "deletion_pending",
+                    "message": "Your deletion request was recorded and "
+                               "cannot be cancelled. Database deletion "
+                               "has not been confirmed. Reconciliation "
+                               "is required; no automatic completion "
+                               "is scheduled.",
+                }) from None
+            raise HTTPException(status_code=503, detail={
+                "code": "deletion_unavailable",
+                "message": "Account deletion is unavailable. Please "
+                           "try again later.",
+            }) from None
+    try:
+        ledger.record_completion(account_uuid, datetime.now(timezone.utc))
+    except Exception:
+        # The DB commit succeeded. Never turn a bookkeeping failure into
+        # a failed deletion response or log provider errors/record bodies.
+        logger.warning(
+            "Account deletion committed; ledger completion needs "
+            "reconciliation (account_uuid=%s)", account_uuid,
+        )
     response.delete_cookie(
         auth_settings.cookie_name, **auth_settings.cookie_options
     )
