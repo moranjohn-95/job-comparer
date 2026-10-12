@@ -164,6 +164,14 @@ export async function signOut(): Promise<void> {
   if (!response.ok) throw await getApiError(response)
 }
 
+export async function deleteAccount(password: string, signal: AbortSignal): Promise<void> {
+  const response = await apiFetch(`${API_URL}/account`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }), signal,
+  })
+  if (response.status !== 204) throw await getApiError(response)
+}
+
 export async function signUp(email: string, password: string): Promise<void> {
   const response = await apiFetch(`${API_URL}/signup`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) }, false)
   if (!response.ok) throw await getApiError(response)

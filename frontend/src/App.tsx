@@ -24,6 +24,7 @@ import {
   deleteSavedComparison,
   deleteJob,
   deleteCv,
+  deleteAccount,
   isCvBusy,
   subscribeCvActivity,
   isJobDeleted,
@@ -48,7 +49,7 @@ import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
 const appViews = ["home", "dashboard", "jobs", "add-job", "comparisons", "my-cv",
-  "dashboard-comparison", "login", "signup", "check-email", "verify-email"] as const;
+  "dashboard-comparison", "account-settings", "login", "signup", "check-email", "verify-email"] as const;
 type View = typeof appViews[number];
 const publicPageTitles = { privacy: "Privacy", terms: "Terms", contact: "Contact" } as const;
 type PublicPage = keyof typeof publicPageTitles;
@@ -108,7 +109,7 @@ type JobHistoryCache = Map<number, {
 }>;
 type IconName =
   | "grid" | "briefcase" | "document" | "arrows" | "login" | "logout"
-  | "plus" | "arrow-right" | "arrow-left" | "bin";
+  | "plus" | "arrow-right" | "arrow-left" | "bin" | "account";
 type DraftProps = {
   cvFile: File | null;
   cvText: string;
@@ -158,6 +159,10 @@ function Icon({ name }: { name: IconName }): ReactNode {
     strokeWidth: 1.7,
   };
   const paths: Record<IconName, ReactNode> = {
+    account: <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21v-2a8 8 0 0 1 16 0v2" />
+    </>,
     bin: <>
       <path d="M3 6h18M9 6V4h6v2M5 6l1 14h12l1-14M10 10v6M14 10v6" />
     </>,
@@ -2078,10 +2083,10 @@ function DashboardOverview({ accountKey, onNavigate, onView, onCvSaved, onJobSav
 }
 
 function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, onCancel, onDeleted, blocked = false }: {
-  kind: "job" | "comparison" | "CV";
+  kind: "job" | "comparison" | "CV" | "account";
   identity?: ReactNode;
   blocked?: boolean;
-  removeItem: (signal: AbortSignal) => Promise<"deleted" | "missing">;
+  removeItem: (signal: AbortSignal, password: string) => Promise<"deleted" | "missing">;
   trigger: RefObject<HTMLButtonElement | null>;
   fallback: RefObject<HTMLHeadingElement | null>;
   onCancel: () => void;
@@ -2090,6 +2095,7 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
   const dialog = useRef<HTMLDialogElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
   const request = useRef<AbortController | null>(null);
+  const [password, setPassword] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -2108,20 +2114,24 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
   }, [trigger, fallback]);
 
   async function remove() {
-    if (request.current || blocked) return;
+    if (request.current || blocked || (kind === "account" && !password)) return;
     const controller = new AbortController();
     request.current = controller;
     setPending(true);
     setError(null);
     try {
-      const outcome = await removeItem(controller.signal);
+      const outcome = await removeItem(controller.signal, password);
       if (!controller.signal.aborted) onDeleted(outcome);
     } catch (caught) {
       if (!controller.signal.aborted) {
-        setError(caught instanceof ApiError ? caught.message : "Please try again.");
+        setError(caught instanceof ApiError ? caught.message
+          : kind === "account"
+          ? "The request could not be confirmed. Check your connection before trying again."
+          : "Please try again.");
       }
     } finally {
       if (!controller.signal.aborted) {
+        setPassword("");
         request.current = null;
         setPending(false);
       }
@@ -2134,21 +2144,68 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
       event.preventDefault();
       if (!request.current) onCancel();
     }}>
-    <h2 id="comparison-delete-title">{kind === "CV" ? "Delete current CV?" : `Delete ${kind}?`}</h2>
+    <form onSubmit={(event) => { event.preventDefault(); void remove(); }}>
+    <h2 id="comparison-delete-title">{kind === "account" ? "Delete your account?"
+      : kind === "CV" ? "Delete current CV?" : `Delete ${kind}?`}</h2>
     {identity && <p className="comparison-delete-identity">{identity}</p>}
-    <p id="comparison-delete-description">{kind === "CV"
+    <p id="comparison-delete-description">{kind === "account"
+      ? "This deletes your account, saved CV, jobs and comparisons, and signs you out on all devices. You can’t undo this action."
+      : kind === "CV"
       ? "This removes your saved CV. Your jobs and saved comparisons will remain. Comparisons may still contain excerpts from this CV; you can delete them separately on the Comparisons page."
       : kind === "job"
       ? "This deletes this saved job and all its saved comparisons. Your saved CV will remain. You can’t undo this action."
       : "This removes this saved comparison and its results. Your saved job and CV will remain. You can’t undo this action."}</p>
-    {error && <p className="form-error" role="alert">Could not delete the {kind}: {error} Your saved {kind} has not been removed from this {kind === "CV" ? "display" : "list"}. Try Delete {kind} again.</p>}
+    {kind === "account" && <div className="account-password">
+      <label htmlFor="delete-account-password">Current password</label>
+      <input id="delete-account-password" type="password" autoComplete="current-password"
+        required maxLength={128} value={password} disabled={pending}
+        aria-describedby={error ? "comparison-delete-error" : undefined}
+        onChange={(event) => setPassword(event.target.value)} />
+    </div>}
+    {error && <p id="comparison-delete-error" className="form-error" role="alert">
+      {kind === "account" ? <>Account deletion was not confirmed. {error}</>
+        : <>Could not delete the {kind}: {error} Your saved {kind} has not been removed from this {kind === "CV" ? "display" : "list"}. Try Delete {kind} again.</>}
+    </p>}
     {pending && <p role="status">Deleting {kind}…</p>}
     <div className="comparison-delete-dialog__actions">
       <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>Cancel</button>
-      <button type="button" className="cv-save comparison-delete-confirm" disabled={pending || blocked}
-        onClick={() => void remove()}>{pending ? "Deleting…" : `Delete ${kind}`}</button>
+      <button type="submit" className="cv-save comparison-delete-confirm"
+        disabled={pending || blocked || (kind === "account" && !password)}>
+        {pending ? "Deleting…" : `Delete ${kind}`}</button>
     </div>
+    </form>
   </dialog>;
+}
+
+function AccountSettingsView({ email, onDeleted }: {
+  email: string;
+  onDeleted: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  return <main className="main-content jobs-page jobs-list-page account-settings-page">
+    <div className="jobs-heading"><h1 ref={heading} tabIndex={-1}>Account settings</h1></div>
+    <div className="account-settings-card">
+      <dl><dt>Email</dt><dd>{email}</dd></dl>
+      <section aria-labelledby="delete-account-heading">
+        <h2 id="delete-account-heading">Delete account</h2>
+        <p>Deleting your account removes your saved CV, jobs and comparisons,
+          and signs you out on all devices. This action cannot be undone.</p>
+        <p className="account-retention-note">Backup copies expire under our retention schedule.
+          Some security records may be retained to prevent abuse.</p>
+        <button ref={trigger} type="button" className="cv-save comparison-delete-confirm"
+          onClick={() => setConfirming(true)}>Delete account</button>
+      </section>
+    </div>
+    {confirming && <DeleteSavedItemDialog kind="account" trigger={trigger} fallback={heading}
+      removeItem={async (signal, password) => {
+        await deleteAccount(password, signal);
+        return "deleted";
+      }}
+      onCancel={() => setConfirming(false)} onDeleted={onDeleted} />}
+  </main>;
 }
 
 function ComparisonsView({ accountKey, historyCache, onDeleted }: {
@@ -2834,6 +2891,7 @@ function App() {
   const [authAttempt, setAuthAttempt] = useState(0);
   const [authError, setAuthError] = useState<string | null>(null);
   const [logoutError, setLogoutError] = useState<string | null>(null);
+  const [accountDeleted, setAccountDeleted] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const authRequest = useRef(0);
   const logoutPending = useRef(false);
@@ -3325,6 +3383,7 @@ function App() {
     setView("comparisons");
   }
   function openLogin() {
+    setAccountDeleted(false);
     if (window.location.pathname === `${import.meta.env.BASE_URL}verify-email`) {
       window.history.replaceState({ jobComparerView: "login" }, "", import.meta.env.BASE_URL);
     }
@@ -3332,6 +3391,7 @@ function App() {
     setView("login");
   }
   function openSignup() {
+    setAccountDeleted(false);
     setError(null);
     setIsSavingDraft(false);
     setView("signup");
@@ -3351,6 +3411,11 @@ function App() {
     setSelectedJobId(null);
     setAccountKey(null);
     setUser(null);
+    setVerificationToken(null);
+    setVerificationEmail("");
+    setVerificationSent(false);
+    setVerificationVisit(0);
+    setAuthError(null);
     setError(null);
     setIsSubmitting(false);
     setLogoutError(null);
@@ -3448,6 +3513,9 @@ function App() {
   if (view === "home")
     return (
       <PageFrame {...pageFrameProps}>
+        {accountDeleted && <p className="account-deleted-notice" role="status">
+          Your account has been deleted.
+        </p>}
         <HomeView
           status={status}
           onLogin={openLogin}
@@ -3523,6 +3591,18 @@ function App() {
           <p className="nav-label nav-label--lower">Account</p>
           <ul>
             {user && accountKey ? (
+              <>
+              <li>
+                <button type="button" className="nav-button"
+                  aria-current={view === "account-settings" ? "page" : undefined}
+                  onClick={() => {
+                    leavePublicPage("account-settings");
+                    setView("account-settings");
+                  }}>
+                  <Icon name="account" />
+                  Account settings
+                </button>
+              </li>
               <li>
                 <button type="button" className="nav-button" onClick={logout}
                   disabled={loggingOut}>
@@ -3537,6 +3617,7 @@ function App() {
                   </button>
                 </div>}
               </li>
+              </>
             ) : (
               <li>
                 <button
@@ -3554,6 +3635,13 @@ function App() {
         {user && accountKey && <p className="sidebar-identity">{user.email}</p>}
       </aside>
       <PageFrame {...pageFrameProps}>
+      {view === "account-settings" && accountKey && user && (
+        <AccountSettingsView key={`${user.id}:${accountKey}`} email={user.email}
+          onDeleted={() => {
+            clearPrivateSession();
+            setAccountDeleted(true);
+          }} />
+      )}
       {jobsVisited && accountKey && user && (
         <Activity mode={view === "jobs" || view === "add-job"
           ? "visible" : "hidden"}>
