@@ -518,6 +518,33 @@ function SignupView({
   );
 }
 
+function CvInputTabs({ idPrefix, method, onChange, disabled, fileLabel = "Upload file" }: {
+  idPrefix: string;
+  method: "file" | "text";
+  onChange: (method: "file" | "text") => void;
+  disabled: boolean;
+  fileLabel?: string;
+}) {
+  return <div className="saved-cv-tabs" role="tablist" aria-label="CV input">
+    {(["file", "text"] as const).map((value) => (
+      <button key={value} type="button" role="tab"
+        id={`${idPrefix}-tab-${value}`} aria-controls={`${idPrefix}-panel-${value}`}
+        aria-selected={method === value} tabIndex={method === value ? 0 : -1}
+        disabled={disabled} onClick={() => onChange(value)}
+        onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+          event.preventDefault();
+          const next = event.key === "Home" ? "file"
+            : event.key === "End" ? "text" : value === "file" ? "text" : "file";
+          onChange(next);
+          document.getElementById(`${idPrefix}-tab-${next}`)?.focus();
+        }}>
+        {value === "file" ? fileLabel : "Paste text"}
+      </button>
+    ))}
+  </div>;
+}
+
 function StartWithCV({
   cvFile,
   cvText,
@@ -545,6 +572,7 @@ function StartWithCV({
   submissionBlocked = false,
   compact = false,
   getReadiness,
+  feedback,
 }: DraftProps & {
   compareFlow?: boolean;
   busy?: boolean;
@@ -559,8 +587,11 @@ function StartWithCV({
   submissionBlocked?: boolean;
   compact?: boolean;
   getReadiness?: (fileError: string | null) => string | null;
+  feedback?: ReactNode;
 }) {
   const [fileError, setFileError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const activeMethod = selectedInputMethod ?? (cvFile ? "file" : cvText.trim() ? "text" : "file");
   function selectFile(file: File | undefined) {
     if (busy || cvSaved || unavailable) return;
     if (!file) return;
@@ -579,7 +610,7 @@ function StartWithCV({
     <fieldset className="starter-fields job-description" disabled={busy || unavailable}>
       {compareFlow && <legend className="dashboard-step-heading">
         <span className="step-number" aria-hidden="true">1</span>
-        {compact ? "Choose a job" : "Job details"}
+        Job details
       </legend>}
       <div className="dashboard-step-content">
       {jobChoice}
@@ -598,12 +629,12 @@ function StartWithCV({
             maxLength={MAX_JOB_COMPANY_LENGTH} />
         </div>
       </div>
-      <h3>Add a job description</h3>
+      <h3>{compareFlow ? "Job description" : "Add a job description"}</h3>
       <label className="visually-hidden" htmlFor="job-description">Job description</label>
       <textarea id="job-description" value={jobDescription}
         onChange={(event) => onJobDescriptionChange(event.target.value)}
         placeholder="Paste the full job description, responsibilities, and requirements here."
-        rows={compact ? 6 : 10} />
+        rows={compareFlow || compact ? 6 : 10} />
       </>}
       </div>
       {compareFlow && <div className="dashboard-step-action">{jobAction}</div>}
@@ -643,26 +674,37 @@ function StartWithCV({
       <div className="dashboard-step-content">
       {cvChoice}
       {!hideCvFields && <>
+      {compareFlow && <CvInputTabs idPrefix="dashboard-cv" method={activeMethod}
+        onChange={onInputMethodChange} disabled={busy || cvSaved || unavailable}
+        fileLabel="Upload a file" />}
       <div className="cv-starter__grid">
-        <div className="cv-upload">
-          <h3>Upload your CV</h3>
+        <div className="cv-upload" hidden={compareFlow && activeMethod !== "file"}
+          id={compareFlow ? "dashboard-cv-panel-file" : undefined}
+          role={compareFlow ? "tabpanel" : undefined}
+          aria-labelledby={compareFlow ? "dashboard-cv-tab-file" : undefined}>
+          {!compareFlow && <h3>Upload your CV</h3>}
           <div
             className="cv-dropzone"
             onDragOver={(event) => event.preventDefault()}
             onDrop={handleDrop}
           >
+            {compareFlow && <Icon name="document" />}
             <input
+              ref={fileInput}
               id="cv-file"
               className="visually-hidden"
               type="file"
               accept={CV_FILE_ACCEPT}
+              aria-label={compareFlow ? "Choose a file" : undefined}
+              tabIndex={compareFlow ? -1 : undefined}
               onChange={handleFileChange}
             />
             <p>Drag and drop your CV here</p>
             <span>PDF or DOCX, up to 5 MB</span>
-            <label className="cv-picker" htmlFor="cv-file">
+            {compareFlow ? <button type="button" className="cv-picker"
+              onClick={() => fileInput.current?.click()}>Choose a file</button> : <label className="cv-picker" htmlFor="cv-file">
               Choose a file
-            </label>
+            </label>}
           </div>
           {cvFile && (
             <p className="cv-selection" role="status">
@@ -675,8 +717,11 @@ function StartWithCV({
             </p>
           )}
         </div>
-        <div className="cv-paste">
-          <h3>Paste your CV text</h3>
+        <div className="cv-paste" hidden={compareFlow && activeMethod !== "text"}
+          id={compareFlow ? "dashboard-cv-panel-text" : undefined}
+          role={compareFlow ? "tabpanel" : undefined}
+          aria-labelledby={compareFlow ? "dashboard-cv-tab-text" : undefined}>
+          {!compareFlow && <h3>Paste your CV text</h3>}
           <label className="visually-hidden" htmlFor="cv-text">
             Paste your CV text
           </label>
@@ -685,7 +730,7 @@ function StartWithCV({
             value={cvText}
             onChange={(event) => onCvTextChange(event.target.value)}
             placeholder="Paste your CV here…"
-            rows={compact ? 5 : 7}
+            rows={compareFlow ? 8 : compact ? 5 : 7}
           />
           {cvText.trim() && (
             <p className="cv-selection" role="status">
@@ -695,7 +740,6 @@ function StartWithCV({
         </div>
       </div>
       </>}
-      {compareFlow && cvMethod}
       </div>
       {compareFlow && <div className="dashboard-step-action">{cvAction}</div>}
       </fieldset>
@@ -706,30 +750,34 @@ function StartWithCV({
     className="cv-save"
     onClick={() => onSave(fileError)}
     disabled={busy || unavailable || submissionBlocked || (compact && readiness !== null)}
-    aria-describedby={compact && !submissionBlocked ? "dashboard-compare-readiness" : undefined}
+    aria-describedby={compareFlow && !submissionBlocked ? "dashboard-compare-readiness" : undefined}
   >
     {compareFlow ? busy ? "Working…" : "Compare" : "Save"}
   </button>;
   const actions = (
     <div className="cv-starter__actions dashboard-step--compare">
-      {compareFlow && <h3 className="dashboard-step-heading">
+      {compareFlow && <div className="dashboard-compare-summary">
+      <h3 className="dashboard-step-heading">
         <span className="step-number" aria-hidden="true">3</span>Compare
-      </h3>}
-      {compareFlow && <div className="dashboard-step-content compare-readiness">
-        {compact && !submissionBlocked && <p id="dashboard-compare-readiness" role="status">
+      </h3>
+      <div className="compare-readiness">
+        {!submissionBlocked && <p id="dashboard-compare-readiness" role="status">
           {busy ? "Saving and comparing your details…"
             : unavailable ? "Saved details must load before comparing."
-            : readiness ?? "Your job and CV are ready to compare."}
+            : compact ? readiness ?? "Your job and CV are ready to compare."
+            : "Your job and CV are saved when you compare."}
         </p>}
+      </div>
       </div>}
       {compareFlow ? <div className="dashboard-step-action">{compareButton}</div> : compareButton}
+      {feedback && <div className="dashboard-comparison-feedback">{feedback}</div>}
     </div>
   );
   return (
     <section className={`cv-starter${compact ? " cv-starter--compact" : ""}`} aria-labelledby="cv-starter-heading">
       <div className="cv-starter__intro">
         <h2 id="cv-starter-heading">{compareFlow ? "Start a comparison" : "Start with your CV"}</h2>
-        {!compact && <p>{compareFlow ? "Choose a job and your CV below, then compare." : "Add a PDF or DOCX, or paste your CV text."}</p>}
+        {(compareFlow || !compact) && <p>{compareFlow ? "Add job details and your CV, then compare." : "Add a PDF or DOCX, or paste your CV text."}</p>}
       </div>
       {compareFlow ? (
         <div className="dashboard-comparison-steps">{jobFields}{cvFields}{actions}</div>
@@ -1483,33 +1531,8 @@ function MyCvView({ accountKey, visible, onSaved }: {
       )}
       {!preview && !loading && !error && (
         <section className="cv-paste saved-cv-form" aria-label="Save CV">
-          <div className="saved-cv-tabs" role="tablist" aria-label="CV input">
-            {(["file", "text"] as const).map((method) => (
-              <button
-                key={method}
-                type="button"
-                role="tab"
-                id={`saved-cv-tab-${method}`}
-                aria-controls={`saved-cv-panel-${method}`}
-                aria-selected={inputMethod === method}
-                tabIndex={inputMethod === method ? 0 : -1}
-                disabled={saving}
-                onClick={() => setInputMethod(method)}
-                onKeyDown={(event) => {
-                  if (!["ArrowLeft", "ArrowRight", "Home", "End"]
-                    .includes(event.key)) return;
-                  event.preventDefault();
-                  const next = event.key === "Home" ? "file"
-                    : event.key === "End" ? "text"
-                    : method === "file" ? "text" : "file";
-                  setInputMethod(next);
-                  document.getElementById(`saved-cv-tab-${next}`)?.focus();
-                }}
-              >
-                {method === "file" ? "Upload file" : "Paste text"}
-              </button>
-            ))}
-          </div>
+          <CvInputTabs idPrefix="saved-cv" method={inputMethod}
+            onChange={setInputMethod} disabled={saving} />
           <div
             id="saved-cv-panel-file"
             role="tabpanel"
@@ -1635,7 +1658,7 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
   const [jobTitle, setJobTitle] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [jobDescription, setJobDescription] = useState("");
-  const [method, setMethod] = useState<CvInputMethod>(null);
+  const [method, setMethod] = useState<"file" | "text">("file");
   // Keep the empty-account form stable through its staged saves and retries.
   const [compact, setCompact] = useState(jobs.length > 0 || savedCv !== null);
   const [jobMode, setJobMode] = useState<"saved" | "add">(
@@ -1669,9 +1692,10 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
       }
     }
     if (!cvSaved) {
-      if (fileError || (!cvFile && !cvText.trim())) errors.push("Add a valid CV file or paste your CV text.");
-      if (cvFile && cvText.trim() && !method) errors.push("Choose whether to use the uploaded file or pasted CV text.");
-      if ((!cvFile || method === "text") && [...cvText.trim()].length > MAX_CV_TEXT_LENGTH) {
+      if (method === "file" ? fileError || !cvFile : !cvText.trim()) {
+        errors.push("Add a valid CV file or paste your CV text.");
+      }
+      if (method === "text" && [...cvText.trim()].length > MAX_CV_TEXT_LENGTH) {
         errors.push("CV text must be 50,000 characters or fewer.");
       }
     }
@@ -1702,13 +1726,13 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
       }
       if (!hasCv) {
         setProgress("Saving your CV…");
-        const text = cvFile && method !== "text"
-          ? await uploadCv(cvFile, controller.signal)
+        const text = method === "file"
+          ? await uploadCv(cvFile!, controller.signal)
           : (await saveCvText(cvText.trim(), controller.signal), cvText.trim());
         if (controller.signal.aborted) return;
         hasCv = true;
         setReplacingCv(false);
-        setCvFile(null); setCvText(""); setMethod(null);
+        setCvFile(null); setCvText(""); setMethod("file");
         onCvSaved(text);
       }
       setProgress("Comparing your CV and job…");
@@ -1741,6 +1765,11 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
     <section className="dashboard-flow" aria-label="Compare your CV with a job">
         <StartWithCV compareFlow busy={progress !== null} unavailable={unavailable}
           compact={compact} submissionBlocked={navigationError !== null}
+          feedback={progress || navigationError || error ? <>
+            {progress && <p role="status">{progress}</p>}
+            {navigationError ? <ComparisonNavigationRecovery onOpenComparisons={onOpenComparisons} />
+              : error && <p className="form-error" role="alert">{error}</p>}
+          </> : null}
           getReadiness={(fileError) => validateInputs(fileError)[0] ?? null}
           hideJobFields={jobMode === "saved"} hideCvFields={cvSaved}
           cvSaved={cvSaved}
@@ -1796,10 +1825,8 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
           jobDescription={jobDescription} selectedInputMethod={method}
           onFileChange={setCvFile} onCvTextChange={setCvText} onJobTitleChange={setJobTitle}
           onCompanyNameChange={setCompanyName} onJobDescriptionChange={setJobDescription}
-          onInputMethodChange={setMethod} onSave={(fileError) => void submit(fileError)} />
-      {progress && <p role="status">{progress}</p>}
-      {navigationError ? <ComparisonNavigationRecovery onOpenComparisons={onOpenComparisons} />
-        : error && <p className="form-error" role="alert">{error}</p>}
+          onInputMethodChange={(next) => setMethod(next ?? "file")}
+          onSave={(fileError) => void submit(fileError)} />
     </section>
   );
 }

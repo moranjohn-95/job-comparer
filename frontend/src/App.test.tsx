@@ -865,6 +865,7 @@ test("empty Dashboard opens the exact saved comparison and refreshes sidebar scr
   expect(main.getByRole("alert")).toHaveTextContent("Enter a job title");
   expect(writes).toEqual([]);
   fillEmptyJob(main);
+  fireEvent.click(main.getByRole("tab", { name: "Paste text" }));
   fireEvent.change(main.getByLabelText("Paste your CV text"), { target: { value: "My TypeScript CV" } });
   // Visit both pages before saving to ensure their existing instances refresh.
   fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
@@ -899,6 +900,57 @@ test("empty Dashboard opens the exact saved comparison and refreshes sidebar scr
   expect(screen.getByRole("region", { name: "Saved CV text" })).toHaveTextContent("My TypeScript CV");
   fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
   expect(await screen.findByRole("list", { name: "Saved comparisons" })).toHaveTextContent("Engineer");
+});
+
+test.each(["file", "text"] as const)("Dashboard preserves both CV drafts and submits only the active %s method", async (method) => {
+  const { writes, fetchMock } = mockEmptyDashboard();
+  const main = await openEmptyDashboard();
+  fillEmptyJob(main);
+  const uploadTab = main.getByRole("tab", { name: "Upload a file" });
+  const textTab = main.getByRole("tab", { name: "Paste text" });
+  expect(uploadTab).toHaveAttribute("aria-selected", "true");
+  expect(main.getByRole("tabpanel", { name: "Upload a file" })).toBeVisible();
+  expect(main.queryByRole("tabpanel", { name: "Paste text" })).not.toBeInTheDocument();
+  const file = new File(["cv"], "preserved.pdf", { type: "application/pdf" });
+  fireEvent.change(main.getByLabelText("Choose a file"), { target: { files: [file] } });
+
+  fireEvent.keyDown(uploadTab, { key: "ArrowRight" });
+  expect(textTab).toHaveFocus();
+  expect(textTab).toHaveAttribute("aria-selected", "true");
+  expect(main.getByRole("tabpanel", { name: "Paste text" })).toBeVisible();
+  expect(main.queryByRole("tabpanel", { name: "Upload a file" })).not.toBeInTheDocument();
+  // A populated inactive file must not make the blank text method valid.
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(main.getByRole("alert")).toBeVisible();
+  expect(writes).toEqual([]);
+  const text = method === "file" ? "x".repeat(50_001) : "Preserved CV text";
+  fireEvent.change(main.getByLabelText("Paste your CV text"), { target: { value: text } });
+  fireEvent.keyDown(textTab, { key: "Home" });
+  expect(uploadTab).toHaveFocus();
+  expect(uploadTab).toHaveAttribute("aria-selected", "true");
+  expect(main.getByText("Selected: preserved.pdf")).toBeVisible();
+
+  if (method === "text") {
+    // An invalid inactive file must not prevent submission of valid text.
+    fireEvent.change(main.getByLabelText("Choose a file"), {
+      target: { files: [new File(["invalid"], "invalid.exe")] },
+    });
+  }
+  fireEvent.keyDown(uploadTab, { key: "End" });
+  expect(textTab).toHaveFocus();
+  expect(main.getByLabelText("Paste your CV text")).toHaveValue(text);
+  if (method === "file") fireEvent.click(uploadTab);
+  expect(writes).toEqual([]);
+  fireEvent.click(main.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("heading", { name: "Saved comparison" })).toBeVisible();
+  expect(writes).toEqual(["POST /jobs", method === "file" ? "POST /cv/upload" : "PUT /cv",
+    "POST /jobs/73/compare"]);
+  const cvRequest = fetchMock.mock.calls.find(([url, init]) => method === "file"
+    ? String(url).endsWith("/cv/upload")
+    : String(url).endsWith("/cv") && init?.method === "PUT");
+  const cvBody = cvRequest?.[1]?.body;
+  if (method === "file") expect((cvBody as FormData).get("file")).toBe(file);
+  else expect(JSON.parse(String(cvBody))).toEqual({ text });
 });
 
 test("empty Dashboard reuses its saved job after upload and comparison failures", async () => {
@@ -956,10 +1008,16 @@ test("returning Dashboard explicitly selects a saved job by ID and reuses the sa
 
   fireEvent.click(main.getByRole("button", { name: "Replace CV" }));
   expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.click(main.getByRole("tab", { name: "Paste text" }));
   fireEvent.change(main.getByLabelText("Paste your CV text"), {
     target: { value: "Unsubmitted replacement CV" },
   });
   expect(main.getByRole("button", { name: "Compare" })).toBeEnabled();
+  fireEvent.click(main.getByRole("tab", { name: "Upload a file" }));
+  expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  expect(writes).toEqual([]);
+  fireEvent.click(main.getByRole("tab", { name: "Paste text" }));
+  expect(main.getByLabelText("Paste your CV text")).toHaveValue("Unsubmitted replacement CV");
   fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
   await screen.findByText("You have no saved comparisons yet.");
   fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
@@ -996,6 +1054,7 @@ test("Dashboard with only saved jobs accepts a CV and reuses the explicitly sele
   expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
   fireEvent.change(jobPicker, { target: { value: "73" } });
   expect(main.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.click(main.getByRole("tab", { name: "Paste text" }));
   fireEvent.change(main.getByLabelText("Paste your CV text"), {
     target: { value: "My TypeScript CV" },
   });
