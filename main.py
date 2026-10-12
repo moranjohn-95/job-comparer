@@ -22,7 +22,7 @@ from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from auth import (
@@ -32,9 +32,11 @@ from auth import (
 from auth_http import get_auth_settings
 from auth_sessions import create_session, resolve_session, revoke_session
 from ai_usage import (
+    UsageAccountMissing,
     UsageConfigurationError,
     UsageLimitReached,
     reserve_attempt,
+    lock_usage,
 )
 from auth_rate_limit import (
     LOGIN_EMAIL_ATTEMPT_LIMIT,
@@ -69,7 +71,7 @@ from email_verification import (
     verification_email,
 )
 from mail_delivery import MailDeliveryError
-from models import ComparisonHistory, SavedCV, SavedJob, User
+from models import AIUsageCounter, ComparisonHistory, SavedCV, SavedJob, User
 
 auth_settings = get_auth_settings()
 app = FastAPI()
@@ -77,6 +79,10 @@ app = FastAPI()
 
 @app.exception_handler(RequestValidationError)
 async def safe_auth_validation(request: Request, error):
+    if request.url.path == "/account":
+        return JSONResponse(
+            {"detail": "Invalid account deletion request."}, status_code=422,
+        )
     if request.url.path in {"/signup", "/login"} or (
         request.url.path.startswith("/verification/")
     ):
@@ -136,6 +142,12 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
+
+
+class DeleteAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: str = Field(min_length=1, max_length=128, repr=False)
 
 
 class ResendVerificationRequest(BaseModel):
@@ -481,6 +493,61 @@ def me(user: User = Depends(current_user)) -> User:
     return user
 
 
+@app.delete("/account", status_code=204)
+def delete_account(
+    payload: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> None:
+    user_id, email = user.id, user.email
+    # Share the login password-attempt budget, across sessions and workers.
+    # This reservation commits before the separate deletion transaction.
+    try:
+        reserve_auth_attempts(session, (
+            (login_ip_scope(client_ip(request)),
+             LOGIN_IP_ATTEMPT_LIMIT, LOGIN_WINDOW),
+            (login_email_scope(email),
+             LOGIN_EMAIL_ATTEMPT_LIMIT, LOGIN_WINDOW),
+        ))
+    except AuthRateLimitReached:
+        raise rate_limited() from None
+    password_hash = session.scalar(
+        select(User.password_hash).where(User.id == user_id)
+    )
+    if password_hash is None:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    if not verify_password(payload.password, password_hash):
+        raise HTTPException(
+            status_code=400, detail="Current password is incorrect.",
+        )
+    try:
+        lock_usage(session)
+        # Match the verified hash too: a concurrent password change must not
+        # allow deletion using a password that is no longer current.
+        removed = session.scalar(delete(User).where(
+            User.id == user_id, User.password_hash == password_hash,
+        ).returning(User.id))
+        if removed is None:
+            session.rollback()
+            raise HTTPException(
+                status_code=409, detail="Account changed. Please retry.",
+            )
+        # Foreign keys cascade CVs, jobs, history, sessions and tokens.
+        # Keep shared app usage and authentication/email anti-abuse limits.
+        session.execute(delete(AIUsageCounter).where(
+            AIUsageCounter.counter_key.startswith(f"user:{user_id}:")
+        ))
+        session.commit()
+    except SQLAlchemyError:
+        session.rollback()
+        raise
+    response.delete_cookie(
+        auth_settings.cookie_name, **auth_settings.cookie_options
+    )
+
+
 @app.put("/cv", response_model=CVPublic)
 def save_cv(
     payload: CVInput,
@@ -634,6 +701,10 @@ def compare_job(
 
     try:
         reserve_attempt(session, user_id)
+    except UsageAccountMissing:
+        raise HTTPException(
+            status_code=401, detail="Authentication required",
+        ) from None
     except UsageConfigurationError:
         raise HTTPException(
             status_code=503, detail="AI comparison limits are invalid"

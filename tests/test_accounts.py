@@ -12,11 +12,13 @@ import pytest
 import jwt
 from conftest import BrowserClient as TestClient, signup_verified
 from sqlalchemy import delete, func, literal, select, update
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
 
 from auth import verify_password
+from ai_usage import UsageAccountMissing, reserve_attempt
 from auth_sessions import create_session
 from auth_http import get_auth_settings
 from auth_rate_limit import (
@@ -32,7 +34,10 @@ import main
 import auth_rate_limit
 import email_verification
 import mail_delivery
-from models import AuthRateLimitCounter, AuthSession, User, VerificationToken
+from models import (
+    AIUsageCounter, AuthRateLimitCounter, AuthSession, ComparisonHistory,
+    SavedCV, SavedJob, User, VerificationToken,
+)
 
 PASSWORD = "correct-horse-battery-123"
 
@@ -804,3 +809,201 @@ def test_signup_validates_inputs(
     response = client.post("/signup", json=payload)
 
     assert response.status_code == 422
+
+
+@pytest.fixture
+def account_deletion_data(client, email):
+    signup(client, email)
+    login = client.post("/login", json={
+        "email": email, "password": PASSWORD,
+    })
+    assert login.status_code == 200
+    owner_id = login.json()["id"]
+    global_key = f"app:day:delete-test-{uuid4().hex}"
+    with Session(get_engine()) as db:
+        owner = db.get(User, owner_id)
+        other = User(
+            email=f"other-{uuid4().hex}@example.com",
+            password_hash=owner.password_hash,
+            email_verified_at=datetime.now(timezone.utc),
+        )
+        db.add(other)
+        db.flush()
+        other_id = other.id
+        cookies = {}
+        for user in (owner, other):
+            cv = SavedCV(user_id=user.id, text="Private test CV")
+            job = SavedJob(
+                user_id=user.id, title="Test job", company_name="Test Co",
+                description="Python",
+            )
+            db.add_all([cv, job])
+            db.flush()
+            db.add(ComparisonHistory(
+                user_id=user.id, job_id=job.id, cv_revision=cv.revision,
+                result={
+                    "matched_requirements": [{
+                        "requirement": "Python", "job_evidence": "Python",
+                        "cv_evidence": "Private historical excerpt",
+                    }],
+                    "possible_gaps": [],
+                },
+            ))
+            cookies[user.id] = create_session(db, user.id)
+            email_verification.issue_verification(db, user)
+        keys = [f"user:{uid}:2099-01-01" for uid in (owner_id, other_id)]
+        keys.append(global_key)
+        db.add_all(AIUsageCounter(counter_key=key, call_count=2)
+                   for key in keys)
+        db.commit()
+    try:
+        yield owner_id, other_id, cookies, keys
+    finally:
+        with Session(get_engine()) as db:
+            db.execute(delete(User).where(User.id.in_([owner_id, other_id])))
+            db.execute(delete(AIUsageCounter).where(
+                AIUsageCounter.counter_key.in_(keys)
+            ))
+            db.commit()
+
+
+def test_account_deletion_cascades_and_preserves_other_account(
+    client, account_deletion_data,
+):
+    owner_id, other_id, cookies, keys = account_deletion_data
+    original_cookie = client.cookies["job_comparer_session"]
+    with Session(get_engine()) as db:
+        limits_before = set(db.scalars(
+            select(AuthRateLimitCounter.counter_key)
+        ))
+        shared_before = dict(db.execute(select(
+            AuthRateLimitCounter.counter_key,
+            AuthRateLimitCounter.attempt_count,
+        ).where(
+            ~AuthRateLimitCounter.counter_key.startswith("login:")
+        )).all())
+    # Keep a stale authenticated User in a separate identity map, modelling
+    # a comparison request that has not yet reserved its provider attempt.
+    with Session(get_engine()) as stale:
+        assert stale.get(User, owner_id) is not None
+        response = client.request(
+            "DELETE", "/account", json={"password": PASSWORD},
+        )
+        assert response.status_code == 204
+        assert response.content == b""
+        assert "Max-Age=0" in response.headers["set-cookie"]
+        assert "HttpOnly" in response.headers["set-cookie"]
+        with pytest.raises(UsageAccountMissing):
+            reserve_attempt(stale, owner_id)
+    for token in (original_cookie, cookies[owner_id]):
+        assert client.get("/me", headers={
+            "Cookie": f"job_comparer_session={token}",
+        }).status_code == 401
+    assert client.get("/me", headers={
+        "Cookie": f"job_comparer_session={cookies[other_id]}",
+    }).json()["id"] == other_id
+    with Session(get_engine()) as db:
+        assert db.get(User, owner_id) is None
+        assert db.get(User, other_id) is not None
+        for model in (SavedCV, SavedJob, ComparisonHistory,
+                      AuthSession, VerificationToken):
+            assert db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == owner_id
+            )) == 0
+            assert db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == other_id
+            )) > 0
+        assert db.scalar(select(AIUsageCounter.counter_key).where(
+            AIUsageCounter.counter_key.startswith(f"user:{owner_id}:")
+        )) is None
+        for key in keys[1:]:
+            assert db.get(AIUsageCounter, key).call_count == 2
+        assert db.get(AIUsageCounter, "__lock__") is not None
+        assert limits_before <= set(db.scalars(
+            select(AuthRateLimitCounter.counter_key)
+        ))
+        assert shared_before == dict(db.execute(select(
+            AuthRateLimitCounter.counter_key,
+            AuthRateLimitCounter.attempt_count,
+        ).where(
+            ~AuthRateLimitCounter.counter_key.startswith("login:")
+        )).all())
+        # Even an already-authenticated late save cannot recreate a CV.
+        db.add(SavedCV(user_id=owner_id, text="Late test save"))
+        with pytest.raises(IntegrityError):
+            db.flush()
+        db.rollback()
+
+
+def test_account_deletion_rejects_wrong_password_and_invalid_requests(
+    client, account_deletion_data,
+):
+    owner_id, _, _, _ = account_deletion_data
+    for headers, payload, expected in (
+        ({}, {"password": "wrong-current-password"}, 400),
+        ({"Cookie": ""}, {"password": PASSWORD}, 401),
+        ({"X-CSRF-Protection": ""}, {"password": PASSWORD}, 403),
+        ({"Origin": "https://untrusted.example"},
+         {"password": PASSWORD}, 403),
+        ({}, {"password": PASSWORD, "user_id": owner_id + 1}, 422),
+        ({}, {"password": PASSWORD * 10}, 422),
+    ):
+        response = client.request(
+            "DELETE", "/account", headers=headers, json=payload,
+        )
+        assert response.status_code == expected
+        assert payload["password"] not in response.text
+        assert "set-cookie" not in response.headers
+        assert client.get("/me").json()["id"] == owner_id
+        assert client.get("/cv").json()["text"] == "Private test CV"
+        assert len(client.get("/jobs").json()) == 1
+
+
+def test_account_deletion_password_attempts_share_persistent_login_limits(
+    client, account_deletion_data,
+):
+    owner_id, _, cookies, _ = account_deletion_data
+    # The fixture's login already consumed one password attempt.
+    for _ in range(LOGIN_EMAIL_ATTEMPT_LIMIT - 1):
+        assert client.request("DELETE", "/account", json={
+            "password": "wrong-current-password",
+        }).status_code == 400
+    # Switching to another valid session cannot reset the account budget.
+    response = client.request("DELETE", "/account", json={
+        "password": PASSWORD,
+    }, headers={"Cookie": f"job_comparer_session={cookies[owner_id]}"})
+    assert response.status_code == 429
+    assert "set-cookie" not in response.headers
+    assert client.get("/me").json()["id"] == owner_id
+    assert client.get("/cv").status_code == 200
+
+
+def test_account_deletion_commit_failure_rolls_back_without_clearing_cookie(
+    client, account_deletion_data, monkeypatch,
+):
+    owner_id, _, cookies, keys = account_deletion_data
+    original_lock = main.lock_usage
+
+    def fail_commit():
+        raise SQLAlchemyError("Simulated test commit failure")
+
+    def lock_then_fail_commit(db):
+        original_lock(db)
+        monkeypatch.setattr(db, "commit", fail_commit)
+
+    monkeypatch.setattr(main, "lock_usage", lock_then_fail_commit)
+    with TestClient(app, raise_server_exceptions=False) as browser:
+        response = browser.request("DELETE", "/account", json={
+            "password": PASSWORD,
+        }, headers={"Cookie": f"job_comparer_session={cookies[owner_id]}"})
+    assert response.status_code == 500
+    assert "set-cookie" not in response.headers
+    assert PASSWORD not in response.text
+    assert client.get("/me").json()["id"] == owner_id
+    with Session(get_engine()) as db:
+        for model in (SavedCV, SavedJob, ComparisonHistory,
+                      AuthSession, VerificationToken):
+            assert db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == owner_id
+            )) > 0
+        assert db.get(AIUsageCounter, keys[0]).call_count == 2
