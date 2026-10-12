@@ -1570,7 +1570,7 @@ test("deletes the exact comparison without parsing 204 and refreshes summaries a
   expect(await screen.findByText("Comparison deleted.")).toHaveAttribute("role", "status");
   expect(screen.queryByRole("button", { name: /Delete comparison.*comparison 42/ })).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: /Delete comparison.*comparison 43/ })).toBeVisible();
-  expect(screen.getByRole("heading", { name: "Comparisons" })).toHaveFocus();
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Comparisons" })).toHaveFocus());
   const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
   expect(writes).toHaveLength(1);
   expect(writes[0][0]).toBe("/api/jobs/7/comparisons/42");
@@ -1654,4 +1654,121 @@ test("ignores late pre-delete summary, history and detail responses only in thei
   await waitFor(() => expect(finish).toHaveLength(4));
   finish[3]();
   expect((await nextSession).map((entry) => entry.id)).toEqual([42, 43]);
+});
+
+async function renderJobDeletion(remove: () => Promise<Response>, count = 2) {
+  enableDialogMock();
+  const jobs = [deletionJob, { id: 8, title: "Designer", company_name: "South Lab" }].slice(0, count);
+  const summaries = [...deletionSummaries, ...(count === 2 ? [{
+    ...deletionSummaries[0], id: 44, job_id: 8,
+    job_title: "Designer", company_name: "South Lab",
+  }] : [])];
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "DELETE") return remove();
+    if (url.endsWith("/compare")) return Promise.resolve(Response.json({ detail: "Mock comparison failure" }, { status: 503 }));
+    // Keep returning stale snapshots: deleted jobs and related history must
+    // not reappear on navigation or in refreshed overview data.
+    if (url === "/api/jobs") return Promise.resolve(Response.json(jobs));
+    if (url === "/api/comparisons") return Promise.resolve(Response.json(summaries));
+    const history = url.match(/^\/api\/jobs\/(\d+)\/comparisons$/);
+    if (history) return Promise.resolve(Response.json(summaries.filter((entry) => entry.job_id === Number(history[1])).map((entry) => ({
+      ...entry, cv_outdated: false, result: comparisonResult,
+    }))));
+    return Promise.resolve(savedDraftResponse(url));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await renderSignedOutApp();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Start a comparison" });
+  return fetchMock;
+}
+
+async function openJobDeletion() {
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete job: Researcher at North Lab" }));
+  return screen.getByRole("dialog", { name: "Delete job?" });
+}
+
+test("job deletion clears related history and retry selection while preserving other records and drafts", async () => {
+  const response = new Response(null, { status: 204 });
+  const parse = vi.spyOn(response, "json");
+  const fetchMock = await renderJobDeletion(async () => response);
+  fireEvent.change(screen.getByLabelText("Use saved job"), { target: { value: "7" } });
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Mock comparison failure");
+  fireEvent.click(screen.getByRole("button", { name: "Add new job" }));
+  fireEvent.change(screen.getByLabelText("Job title"), { target: { value: "Unfinished job" } });
+  fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Draft company" } });
+  fireEvent.click(screen.getByRole("button", { name: "Use saved job" }));
+  fireEvent.click(screen.getByRole("button", { name: "Replace CV" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("Paste your CV text"), { target: { value: "Unfinished CV draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  await screen.findByRole("list", { name: "Saved comparisons" });
+  const dialog = await openJobDeletion();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete job" }));
+  expect(await screen.findByText("Job deleted.")).toBeVisible();
+  expect(screen.queryByRole("button", { name: /View job: Researcher/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /View job: Designer/ })).toBeVisible();
+  const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === "DELETE");
+  expect(writes).toHaveLength(1);
+  expect(writes[0][0]).toBe("/api/jobs/7");
+  expect(new Headers(writes[0][1]?.headers).get("X-CSRF-Protection")).toBe("1");
+  expect(parse).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  const history = await screen.findByRole("list", { name: "Saved comparisons" });
+  expect(within(history).getAllByRole("button", { name: /View comparison/ })).toHaveLength(1);
+  expect(history).toHaveTextContent("Designer");
+  expect(history).not.toHaveTextContent("Researcher");
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  await waitFor(() => expect(within(screen.getByRole("link", { name: /^Saved jobs/ })).getByText("1")).toBeVisible());
+  expect(within(screen.getByRole("link", { name: /^Comparisons/ })).getByText("1")).toBeVisible();
+  expect(within(screen.getByRole("link", { name: /^My CV/ })).getByText("Saved")).toBeVisible();
+  expect(screen.getByLabelText("Use saved job")).toHaveValue("");
+  expect(screen.queryByRole("option", { name: /Researcher/ })).not.toBeInTheDocument();
+  expect(screen.queryByText(/Mock comparison failure/)).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Paste your CV text")).toHaveValue("Unfinished CV draft");
+  expect(screen.getByRole("button", { name: "Compare" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Add new job" }));
+  expect(screen.getByLabelText("Job title")).toHaveValue("Unfinished job");
+  expect(screen.getByLabelText("Company name")).toHaveValue("Draft company");
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === "PUT")).toHaveLength(0);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/compare"))).toHaveLength(1);
+});
+
+test("job deletion cancellation keeps the job without sending a request", async () => {
+  const remove = vi.fn();
+  await renderJobDeletion(remove);
+  const dialog = await openJobDeletion();
+  expect(dialog).toHaveTextContent("Researcher at North Lab");
+  expect(dialog).toHaveTextContent("This deletes this saved job and all its saved comparisons. Your saved CV will remain. You can’t undo this action.");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /View job: Researcher/ })).toBeVisible();
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("job deletion retains the row on failure and reconciles an already-missing job on retry", async () => {
+  let finish!: (response: Response) => void;
+  const remove = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+  await renderJobDeletion(remove, 1);
+  const dialog = await openJobDeletion();
+  const confirm = within(dialog).getByRole("button", { name: "Delete job" });
+  fireEvent.click(confirm);
+  fireEvent.click(confirm);
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(within(dialog).getByRole("button", { name: "Deleting…" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /View job: Researcher/ })).toBeInTheDocument();
+  finish(Response.json({ detail: "Temporarily unavailable" }, { status: 503 }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Temporarily unavailable");
+  expect(screen.getByRole("button", { name: /View job: Researcher/ })).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete job" }));
+  finish(new Response(null, { status: 404 }));
+  expect(await screen.findByText("You have no saved jobs yet.")).toBeVisible();
+  expect(screen.getByText("This job is no longer available. The list has been updated.")).toHaveAttribute("role", "status");
+  expect(remove).toHaveBeenCalledTimes(2);
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  expect(await screen.findByText("You have no saved comparisons yet.")).toBeVisible();
 });

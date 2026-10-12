@@ -21,6 +21,8 @@ import {
   getSavedComparison,
   getComparisonSummaries,
   deleteSavedComparison,
+  deleteJob,
+  isJobDeleted,
   getSavedCv,
   signIn,
   signOut,
@@ -1673,13 +1675,29 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
   const [selectedId, setSelectedId] = useState<number | null>(preferredJobId);
   const [replacingCv, setReplacingCv] = useState(false);
   const savedJob = jobMode === "saved"
-    ? jobs.find((job) => job.id === selectedId) ?? null : null;
+    ? jobs.find((job) => job.id === selectedId && !isJobDeleted(job.id)) ?? null : null;
   const cvSaved = savedCv !== null && !replacingCv;
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [navigationError, setNavigationError] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   useEffect(() => () => { request.current?.abort(); }, []);
+  useEffect(() => {
+    function handleDeletedJob(event: Event) {
+      if (selectedId === null
+        || (event as CustomEvent<number>).detail !== selectedId) return;
+      setSelectedId(null);
+      setError(null);
+      setNavigationError(null);
+      if (jobMode !== "saved") return;
+      request.current?.abort();
+      request.current = null;
+      setProgress(null);
+      setJobMode(jobs.some((job) => !isJobDeleted(job.id)) ? "saved" : "add");
+    }
+    window.addEventListener("job-deleted", handleDeletedJob);
+    return () => window.removeEventListener("job-deleted", handleDeletedJob);
+  }, [selectedId, jobs, jobMode]);
 
   function validateInputs(fileError: string | null) {
     const errors: string[] = [];
@@ -1741,9 +1759,10 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
         setCvFile(null); setCvText(""); setMethod("file");
         onCvSaved(text);
       }
+      if (isJobDeleted(job.id)) return;
       setProgress("Comparing your CV and job…");
       const outcome = await onCompare(job.id);
-      if (controller.signal.aborted) return;
+      if (controller.signal.aborted || isJobDeleted(job.id)) return;
       if (outcome && "result" in outcome) {
         if (outcome.comparisonId === null) setNavigationError(savedComparisonNavigationError);
         else {
@@ -1792,7 +1811,7 @@ function DashboardComparisonFlow({ jobs, savedCv, preferredJobId,
                     setSelectedId(event.target.value ? Number(event.target.value) : null);
                   }}>
                   <option value="">Select a saved job</option>
-                  {jobs.map((job) => <option key={job.id} value={job.id}>{job.title} — {job.company_name}</option>)}
+                  {jobs.filter((job) => !isJobDeleted(job.id)).map((job) => <option key={job.id} value={job.id}>{job.title} — {job.company_name}</option>)}
                 </select>
               </label>
             ))}
@@ -2016,8 +2035,10 @@ function DashboardOverview({ accountKey, onNavigate, onView, onCvSaved, onJobSav
   );
 }
 
-function DeleteComparisonDialog({ entry, trigger, fallback, onCancel, onDeleted }: {
-  entry: ComparisonSummary;
+function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, onCancel, onDeleted }: {
+  kind: "job" | "comparison";
+  identity: ReactNode;
+  removeItem: (signal: AbortSignal) => Promise<"deleted" | "missing">;
   trigger: RefObject<HTMLButtonElement | null>;
   fallback: RefObject<HTMLHeadingElement | null>;
   onCancel: () => void;
@@ -2050,7 +2071,7 @@ function DeleteComparisonDialog({ entry, trigger, fallback, onCancel, onDeleted 
     setPending(true);
     setError(null);
     try {
-      const outcome = await deleteSavedComparison(entry.job_id, entry.id, controller.signal);
+      const outcome = await removeItem(controller.signal);
       if (!controller.signal.aborted) onDeleted(outcome);
     } catch (caught) {
       if (!controller.signal.aborted) {
@@ -2070,16 +2091,17 @@ function DeleteComparisonDialog({ entry, trigger, fallback, onCancel, onDeleted 
       event.preventDefault();
       if (!request.current) onCancel();
     }}>
-    <h2 id="comparison-delete-title">Delete comparison?</h2>
-    <p className="comparison-delete-identity"><strong>{entry.job_title}</strong> at {entry.company_name}
-      <br />{new Date(entry.created_at).toLocaleString()} · Comparison {entry.id}</p>
-    <p id="comparison-delete-description">This removes this saved comparison and its results. Your saved job and CV will remain. You can’t undo this action.</p>
-    {error && <p className="form-error" role="alert">Could not delete the comparison: {error} Your saved comparison has not been removed from this list. Try Delete comparison again.</p>}
-    {pending && <p role="status">Deleting comparison…</p>}
+    <h2 id="comparison-delete-title">Delete {kind}?</h2>
+    <p className="comparison-delete-identity">{identity}</p>
+    <p id="comparison-delete-description">{kind === "job"
+      ? "This deletes this saved job and all its saved comparisons. Your saved CV will remain. You can’t undo this action."
+      : "This removes this saved comparison and its results. Your saved job and CV will remain. You can’t undo this action."}</p>
+    {error && <p className="form-error" role="alert">Could not delete the {kind}: {error} Your saved {kind} has not been removed from this list. Try Delete {kind} again.</p>}
+    {pending && <p role="status">Deleting {kind}…</p>}
     <div className="comparison-delete-dialog__actions">
       <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>Cancel</button>
       <button type="button" className="cv-save comparison-delete-confirm" disabled={pending}
-        onClick={() => void remove()}>{pending ? "Deleting…" : "Delete comparison"}</button>
+        onClick={() => void remove()}>{pending ? "Deleting…" : `Delete ${kind}`}</button>
     </div>
   </dialog>;
 }
@@ -2275,7 +2297,10 @@ function ComparisonsView({ accountKey, historyCache, onDeleted }: {
         )}
       </div>
       <div className={notice ? "comparison-delete-notice" : "visually-hidden"} role="status" aria-live="polite">{notice}</div>
-      {deleting && <DeleteComparisonDialog entry={deleting}
+      {deleting && <DeleteSavedItemDialog kind="comparison"
+        identity={<><strong>{deleting.job_title}</strong> at {deleting.company_name}
+          <br />{new Date(deleting.created_at).toLocaleString()} · Comparison {deleting.id}</>}
+        removeItem={(signal) => deleteSavedComparison(deleting.job_id, deleting.id, signal)}
         trigger={deleteTrigger} fallback={heading}
         onCancel={() => setDeleting(null)}
         onDeleted={(outcome) => {
@@ -2521,7 +2546,7 @@ function AddJobForm({ onCancel, onSaved }: {
 
 function JobsView({ accountKey, selectedJobId, onSelectJob,
   comparisonId, onSelectComparison, addingJob, onAddJob, onShowJobs,
-  comparisonActions, comparisonRuns, historyCache, onJobSaved }: {
+  comparisonActions, comparisonRuns, historyCache, onJobSaved, onJobDeleted }: {
   accountKey: number;
   selectedJobId: number | null;
   onSelectJob: (id: number | null) => void;
@@ -2534,6 +2559,7 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
   comparisonRuns: Record<number, ComparisonRun>;
   historyCache: JobHistoryCache;
   onJobSaved: () => void;
+  onJobDeleted: (job: SavedJob) => void;
 }) {
   const [jobs, setJobs] = useState<SavedJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2541,6 +2567,15 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
   const [attempt, setAttempt] = useState(0);
   const [createdJobId, setCreatedJobId] = useState<number | null>(null);
   const [comparisonFromList, setComparisonFromList] = useState(false);
+  const [deleting, setDeleting] = useState<SavedJob | null>(null);
+  const [notice, setNotice] = useState("");
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -2548,7 +2583,7 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
     void getJobs(controller.signal).then(
       (result) => {
         if (!active) return;
-        setJobs(result);
+        setJobs(result.filter((job) => !isJobDeleted(job.id)));
         setLoading(false);
       },
       (caught: unknown) => {
@@ -2625,7 +2660,7 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
   return (
     <main className="main-content jobs-page jobs-list-page">
       <div className="jobs-heading">
-        <h1>Jobs</h1>
+        <h1 ref={heading} tabIndex={-1}>Jobs</h1>
         <button
           type="button"
           className="cv-save job-primary"
@@ -2704,12 +2739,36 @@ function JobsView({ accountKey, selectedJobId, onSelectJob,
                       },
                     }}
                   />
+                  <button type="button" className="comparison-delete-icon"
+                    title="Delete job"
+                    aria-label={`Delete job: ${job.title} at ${job.company_name}`}
+                    onClick={(event) => {
+                      deleteTrigger.current = event.currentTarget;
+                      setNotice("");
+                      setDeleting(job);
+                    }}>
+                    <Icon name="bin" />
+                  </button>
                 </div>
               </li>
             ))}
           </ul>
         </div>
       )}
+      <div className={notice ? "comparison-delete-notice" : "visually-hidden"} role="status" aria-live="polite">{notice}</div>
+      {deleting && <DeleteSavedItemDialog kind="job"
+        identity={<><strong>{deleting.title}</strong> at {deleting.company_name}</>}
+        removeItem={(signal) => deleteJob(deleting.id, signal)}
+        trigger={deleteTrigger} fallback={heading}
+        onCancel={() => setDeleting(null)}
+        onDeleted={(outcome) => {
+          setJobs((current) => current.filter((job) => job.id !== deleting.id));
+          setCreatedJobId((current) => current === deleting.id ? null : current);
+          setDeleting(null);
+          setNotice(outcome === "deleted" ? "Job deleted."
+            : "This job is no longer available. The list has been updated.");
+          onJobDeleted(deleting);
+        }} />}
     </main>
   );
 }
@@ -3017,7 +3076,7 @@ function App() {
     jobId: number,
   ): Promise<ComparisonOutcome | null> {
     const requests = comparisonRequests.current;
-    if (!accountKey || requests.has(jobId)) return null;
+    if (!accountKey || requests.has(jobId) || isJobDeleted(jobId)) return null;
     requests.add(jobId);
     const sourceVersion = cvVersion.current;
     setComparisonRuns((current) => ({
@@ -3032,7 +3091,7 @@ function App() {
     }));
     try {
       const { result, comparisonId } = await compareJob(jobId);
-      if (comparisonRequests.current !== requests) return null;
+      if (comparisonRequests.current !== requests || isJobDeleted(jobId)) return null;
       setOverviewVersion((value) => value + 1);
       setComparisonRuns((current) => ({
         ...current,
@@ -3044,7 +3103,7 @@ function App() {
       }));
       return { result, comparisonId };
     } catch (caught) {
-      if (comparisonRequests.current !== requests) return null;
+      if (comparisonRequests.current !== requests || isJobDeleted(jobId)) return null;
       const error = caught instanceof ApiError
         ? caught.message
         : "Unable to compare this job right now. Please try again later.";
@@ -3094,6 +3153,34 @@ function App() {
     });
     setSavedComparisonId((current) => current === entry.id ? null : current);
     setDashboardSelection((current) => current?.id === entry.id ? null : current);
+    setOverviewVersion((value) => value + 1);
+  }
+  function handleJobDeleted(job: SavedJob) {
+    window.dispatchEvent(new CustomEvent("job-deleted", { detail: job.id }));
+    setHistoryCache((current) => {
+      const next = new Map(current);
+      next.delete(job.id);
+      return next;
+    });
+    setComparisonRuns((current) => {
+      const next = { ...current };
+      delete next[job.id];
+      return next;
+    });
+    comparisonRequests.current.delete(job.id);
+    if (selectedJobId === job.id) {
+      setSelectedJobId(null);
+      setSavedComparisonId(null);
+    }
+    setCurrentComparisonJobId((current) => current === job.id ? null : current);
+    setDashboardSelection((current) => current?.job_id === job.id ? null : current);
+    if (savedJob?.id === job.id) {
+      setSavedJob(null);
+      setComparisonError(null);
+      setComparisonNavigationError(null);
+    }
+    // Remount history, not the job/CV forms: preserve unfinished drafts.
+    setComparisonVisit((value) => value + 1);
     setOverviewVersion((value) => value + 1);
   }
   async function handleSignup(
@@ -3430,6 +3517,7 @@ function App() {
             accountKey={accountKey}
             selectedJobId={selectedJobId}
             historyCache={historyCache}
+            onJobDeleted={handleJobDeleted}
             onJobSaved={() => {
               setOverviewVersion((value) => value + 1);
               setJobsVersion((value) => value + 1);

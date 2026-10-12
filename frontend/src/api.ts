@@ -58,9 +58,14 @@ export class ApiError extends Error {
 
 let sessionGeneration = 0
 let deletedComparisonIds = new Set<number>()
+let deletedJobIds = new Set<number>()
+export function isJobDeleted(jobId: number): boolean {
+  return deletedJobIds.has(jobId)
+}
 export function resetSessionRequests(): void {
   sessionGeneration += 1
   deletedComparisonIds = new Set()
+  deletedJobIds = new Set()
 }
 
 async function apiFetch(
@@ -230,6 +235,7 @@ export async function createJob(
 export async function getJobs(
   signal: AbortSignal,
 ): Promise<SavedJob[]> {
+  const deleted = deletedJobIds
   const response = await apiFetch(`${API_URL}/jobs`, {
     method: 'GET',
     signal,
@@ -252,13 +258,28 @@ export async function getJobs(
       throw new ApiError('The jobs response was invalid. Please try again.')
     }
     return { id: job.id, title: job.title, company_name: job.company_name }
+  }).filter((job) => !deleted.has(job.id))
+}
+
+export async function deleteJob(
+  jobId: number, signal: AbortSignal,
+): Promise<'deleted' | 'missing'> {
+  const deleted = deletedJobIds
+  const response = await apiFetch(`${API_URL}/jobs/${jobId}`, {
+    method: 'DELETE', signal,
   })
+  if (response.status !== 204 && response.status !== 404) {
+    throw await getApiError(response)
+  }
+  deleted.add(jobId)
+  return response.status === 204 ? 'deleted' : 'missing'
 }
 
 export async function getJob(
   jobId: number,
   signal: AbortSignal,
 ): Promise<JobDetails | null> {
+  const deleted = deletedJobIds
   const response = await apiFetch(`${API_URL}/jobs/${jobId}`, {
     method: 'GET',
     signal,
@@ -266,6 +287,7 @@ export async function getJob(
   if (response.status === 404) return null
   if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
+  if (deleted.has(jobId)) return null
   if (typeof body !== 'object' || body === null) {
     throw new ApiError('The job response was invalid. Please try again.')
   }
@@ -354,6 +376,7 @@ export async function getComparisonSummaries(
   signal: AbortSignal,
 ): Promise<ComparisonSummary[]> {
   const deleted = deletedComparisonIds
+  const deletedJobs = deletedJobIds
   const response = await apiFetch(`${API_URL}/comparisons`, {
     method: 'GET', signal,
   })
@@ -378,13 +401,14 @@ export async function getComparisonSummaries(
           && Number.isInteger(entry[field]) && entry[field] >= 0)
     ) throw new ApiError(invalid)
     return entry as ComparisonSummary
-  }).filter((entry) => !deleted.has(entry.id))
+  }).filter((entry) => !deleted.has(entry.id) && !deletedJobs.has(entry.job_id))
 }
 
 export async function getSavedComparisons(
   jobId: number, signal: AbortSignal,
 ): Promise<SavedComparison[]> {
   const deleted = deletedComparisonIds
+  const deletedJobs = deletedJobIds
   const response = await apiFetch(`${API_URL}/jobs/${jobId}/comparisons`, {
     method: 'GET', signal,
   })
@@ -397,13 +421,14 @@ export async function getSavedComparisons(
     throw new ApiError('The saved comparisons response was invalid.')
   }
   return body.map((entry: unknown) => parseSavedComparison(entry, jobId))
-    .filter((entry) => !deleted.has(entry.id))
+    .filter((entry) => !deleted.has(entry.id) && !deletedJobs.has(jobId))
 }
 
 export async function getSavedComparison(
   jobId: number, comparisonId: number, signal: AbortSignal,
 ): Promise<SavedComparison> {
   const deleted = deletedComparisonIds
+  const deletedJobs = deletedJobIds
   const response = await apiFetch(
     `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
     { method: 'GET', signal },
@@ -413,7 +438,7 @@ export async function getSavedComparison(
   if (entry.id !== comparisonId) {
     throw new ApiError('The saved comparison response was invalid.')
   }
-  if (deleted.has(comparisonId)) {
+  if (deleted.has(comparisonId) || deletedJobs.has(jobId)) {
     throw new ApiError('This comparison is no longer available.', 404)
   }
   return entry

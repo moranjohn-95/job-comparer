@@ -1056,7 +1056,7 @@
 }
 .saved-job-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 14rem);
+  grid-template-columns: auto minmax(0, 14rem) 44px;
   align-items: center;
   justify-content: end;
   gap: var(--space-4);
@@ -1105,9 +1105,12 @@
 }
 @media (max-width: 420px) {
   .saved-job-actions {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) 44px;
     justify-items: start;
     gap: var(--space-3);
+  }
+  .saved-job-actions .job-view-button {
+    grid-column: 1 / -1;
   }
   .jobs-table .job-comparison-action {
     max-width: 100%;
