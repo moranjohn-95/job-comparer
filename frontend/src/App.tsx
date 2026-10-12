@@ -1541,16 +1541,6 @@ function MyCvView({ accountKey, visible, onSaved, onDeleted }: {
             <Icon name="document" />
             <h2 id="current-cv-heading">Current CV</h2>
             <span className="comparison-saved-status">Saved</span>
-          </div>
-          <div className="current-cv-actions">
-            <button
-              type="button"
-              className="cv-save job-primary"
-              aria-label="View current CV"
-              onClick={() => setPreview(true)}
-            >
-              View <Icon name="arrow-right" />
-            </button>
             <button type="button" className="comparison-delete-icon"
               title="Delete current CV" aria-label="Delete current CV"
               disabled={saving || cvBusy}
@@ -1561,6 +1551,16 @@ function MyCvView({ accountKey, visible, onSaved, onDeleted }: {
                 setDeleting(true);
               }}>
               <Icon name="bin" />
+            </button>
+          </div>
+          <div className="current-cv-actions">
+            <button
+              type="button"
+              className="cv-save job-primary"
+              aria-label="View current CV"
+              onClick={() => setPreview(true)}
+            >
+              View <Icon name="arrow-right" />
             </button>
           </div>
         </section>
