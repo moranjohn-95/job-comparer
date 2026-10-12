@@ -2,6 +2,7 @@ import json
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from threading import Barrier
 from uuid import uuid4
 
 import httpx
@@ -1109,6 +1110,129 @@ def test_deleting_a_job_removes_its_history(
 
     with Session(get_engine()) as session:
         assert session.get(ComparisonHistory, entry_id) is None
+
+
+@pytest.fixture
+def saved_comparison(client, create_user, monkeypatch):
+    headers = create_user()
+    job_id = prepare(client, headers)
+    mock_success(monkeypatch)
+    response = client.post(f"/jobs/{job_id}/compare", headers=headers)
+    assert response.status_code == 200
+    return headers, job_id, int(response.headers["X-Comparison-Id"])
+
+
+def test_delete_comparison_preserves_job_cv_and_other_results(
+    client, saved_comparison
+):
+    headers, job_id, comparison_id = saved_comparison
+    path = f"/jobs/{job_id}/comparisons/{comparison_id}"
+    job_before = client.get(f"/jobs/{job_id}", headers=headers).json()
+    cv_before = client.get("/cv", headers=headers).json()
+    other_job_id = prepare(client, headers, cv=False)
+    remaining = []
+    for other_id in (job_id, other_job_id):
+        response = client.post(f"/jobs/{other_id}/compare", headers=headers)
+        assert response.status_code == 200
+        saved_id = int(response.headers["X-Comparison-Id"])
+        other_path = f"/jobs/{other_id}/comparisons/{saved_id}"
+        remaining.append((other_path, client.get(
+            other_path, headers=headers
+        ).json()))
+
+    response = client.delete(path, headers=headers)
+    assert response.status_code == 204
+    assert response.content == b""
+    assert response.headers["cache-control"] == "no-store"
+    with Session(get_engine()) as session:
+        assert session.get(ComparisonHistory, comparison_id) is None
+    assert client.get(path, headers=headers).status_code == 404
+    for list_path in (f"/jobs/{job_id}/comparisons", "/comparisons"):
+        history = client.get(list_path, headers=headers)
+        assert history.status_code == 200
+        assert comparison_id not in [item["id"] for item in history.json()]
+    for other_path, before in remaining:
+        assert client.get(other_path, headers=headers).json() == before
+    assert client.get(f"/jobs/{job_id}", headers=headers).json() == job_before
+    assert client.get("/cv", headers=headers).json() == cv_before
+    repeated = client.delete(path, headers=headers)
+    assert repeated.status_code == 404
+    assert repeated.json() == {"detail": "Comparison not found"}
+
+
+def test_delete_comparison_does_not_disclose_or_cross_ownership(
+    client, saved_comparison, create_user
+):
+    owner, job_id, comparison_id = saved_comparison
+    other = create_user()
+    other_job = prepare(client, other)
+    for requested_job, requested_comparison, headers in (
+        (job_id, comparison_id, other),
+        (other_job, comparison_id, other),
+        (other_job, comparison_id, owner),
+        (job_id, 0, owner),
+        (0, comparison_id, owner),
+    ):
+        response = client.delete(
+            f"/jobs/{requested_job}/comparisons/{requested_comparison}",
+            headers=headers,
+        )
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Comparison not found"}
+    assert client.get(
+        f"/jobs/{job_id}/comparisons/{comparison_id}", headers=owner
+    ).status_code == 200
+
+
+@pytest.mark.parametrize("blocked", [
+    "anonymous", "unverified", "origin", "missing-origin", "csrf",
+])
+def test_delete_comparison_requires_verified_session_and_csrf(
+    client, saved_comparison, blocked
+):
+    headers, job_id, comparison_id = saved_comparison
+    if blocked == "unverified":
+        with Session(get_engine()) as session:
+            entry = session.get(ComparisonHistory, comparison_id)
+            session.get(User, entry.user_id).email_verified_at = None
+            session.commit()
+    if blocked == "anonymous":
+        headers = {}
+    elif blocked == "origin":
+        headers = {**headers, "Origin": "https://untrusted.example"}
+    elif blocked == "missing-origin":
+        client.headers.pop("Origin")
+    elif blocked == "csrf":
+        client.headers.pop("X-CSRF-Protection")
+    response = client.delete(
+        f"/jobs/{job_id}/comparisons/{comparison_id}", headers=headers
+    )
+    assert response.status_code == (401 if blocked == "anonymous" else 403)
+    with Session(get_engine()) as session:
+        assert session.get(ComparisonHistory, comparison_id) is not None
+
+
+def test_delete_comparison_is_atomic_under_concurrent_requests(
+    saved_comparison,
+):
+    headers, job_id, comparison_id = saved_comparison
+    barrier = Barrier(2)
+
+    def remove(_):
+        with TestClient(app) as browser:
+            barrier.wait(timeout=10)
+            return browser.delete(
+                f"/jobs/{job_id}/comparisons/{comparison_id}", headers=headers
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        responses = list(pool.map(remove, range(2)))
+    assert sorted(response.status_code for response in responses) == [204, 404]
+    missing = next(response for response in responses
+                   if response.status_code == 404)
+    assert missing.json() == {"detail": "Comparison not found"}
+    with Session(get_engine()) as session:
+        assert session.get(ComparisonHistory, comparison_id) is None
 
 
 def test_history_lists_multiple_results_newest_first(

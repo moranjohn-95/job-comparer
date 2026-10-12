@@ -20,7 +20,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.exception_handlers import request_validation_exception_handler
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -770,6 +770,28 @@ def view_comparison(
     saved_cv = session.get(SavedCV, user.id)
     current_revision = saved_cv.revision if saved_cv is not None else None
     return history_public(entry, current_revision)
+
+
+@app.delete("/jobs/{job_id}/comparisons/{comparison_id}", status_code=204)
+def delete_comparison(
+    job_id: int,
+    comparison_id: int,
+    user: User = Depends(current_user),
+    session: Session = Depends(get_session),
+) -> Response:
+    # Match and delete atomically so concurrent requests cannot both succeed.
+    # Use one not-found response for absent, mismatched and unowned records.
+    deleted_id = session.scalar(
+        delete(ComparisonHistory).where(
+            ComparisonHistory.id == comparison_id,
+            ComparisonHistory.user_id == user.id,
+            ComparisonHistory.job_id == job_id,
+        ).returning(ComparisonHistory.id)
+    )
+    if deleted_id is None:
+        raise HTTPException(status_code=404, detail="Comparison not found")
+    session.commit()
+    return Response(status_code=204)
 
 
 @app.delete("/jobs/{job_id}", status_code=204)
