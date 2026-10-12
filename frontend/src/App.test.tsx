@@ -10,7 +10,7 @@ import {
 import App from "./App";
 import {
   deleteSavedComparison, getComparisonSummaries, getSavedComparison,
-  getSavedComparisons, resetSessionRequests,
+  getSavedComparisons, getSavedCv, resetSessionRequests,
 } from "./api";
 
 // Most existing journeys begin signed out. Keep their endpoint mocks intact
@@ -1771,4 +1771,153 @@ test("job deletion retains the row on failure and reconciles an already-missing 
   expect(remove).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
   expect(await screen.findByText("You have no saved comparisons yet.")).toBeVisible();
+});
+
+async function renderCvDeletion(
+  remove: () => Promise<Response>,
+  work: () => Promise<Response> = async () => new Response(null, { status: 204 }),
+) {
+  enableDialogMock();
+  let cv: string | null = "Original saved CV";
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (init?.method === "DELETE") {
+      const response = await remove();
+      if ([204, 404].includes(response.status)) cv = null;
+      return response;
+    }
+    if (init?.method === "PUT" || url.endsWith("/compare")) {
+      const response = await work();
+      if (response.ok && init?.method === "PUT") cv = JSON.parse(String(init.body)).text;
+      return response;
+    }
+    if (url === "/api/cv") return cv === null ? new Response(null, { status: 404 }) : Response.json({ text: cv });
+    if (url === "/api/jobs") return Response.json([deletionJob]);
+    if (url === "/api/comparisons") return Response.json(deletionSummaries);
+    if (url.match(/^\/api\/jobs\/7\/comparisons\/\d+$/)) return Response.json({
+      ...deletionDetails[0], id: Number(url.split("/").at(-1)), cv_outdated: cv === null,
+    });
+    return savedDraftResponse(url);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  await renderSignedOutApp();
+  fireEvent.click(screen.getByRole("button", { name: "Log in" }));
+  enterLogin();
+  await screen.findByRole("heading", { name: "Start a comparison" });
+  return fetchMock;
+}
+
+async function showCurrentCv() {
+  fireEvent.click(screen.getByRole("button", { name: "My CV" }));
+  await screen.findByRole("button", { name: "View current CV" });
+}
+
+function confirmCvDeletion() {
+  fireEvent.click(screen.getByRole("button", { name: "Delete current CV" }));
+  const dialog = screen.getByRole("dialog", { name: "Delete current CV?" });
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete CV" }));
+  return dialog;
+}
+
+test("CV deletion clears saved state and stale reads, preserves drafts and invalidates comparison details", async () => {
+  const response = new Response(null, { status: 204 });
+  const parse = vi.spyOn(response, "json");
+  const fetchMock = await renderCvDeletion(async () => response);
+  fireEvent.change(screen.getByLabelText("Use saved job"), { target: { value: "7" } });
+  fireEvent.click(screen.getByRole("button", { name: "Replace CV" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("Paste your CV text"), { target: { value: "Dashboard CV draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  fireEvent.click((await screen.findAllByRole("button", { name: /View comparison for/ }))[0]);
+  await screen.findByRole("region", { name: /Matched requirements/ });
+  await showCurrentCv();
+  const file = new File(["draft"], "unsaved.pdf", { type: "application/pdf" });
+  fireEvent.change(screen.getByRole("main").querySelector('input[type="file"]')!, { target: { files: [file] } });
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("CV text"), { target: { value: "My CV unsaved draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "View current CV" }));
+  expect(screen.getByRole("region", { name: "Saved CV text" })).toHaveTextContent("Original saved CV");
+  fireEvent.click(screen.getByRole("button", { name: "Back to My CV" }));
+  let finishRead!: () => void;
+  const stale = Response.json({ text: "Original saved CV" });
+  vi.spyOn(stale, "json").mockImplementation(() => new Promise((resolve) => {
+    finishRead = () => resolve({ text: "Original saved CV" });
+  }));
+  fetchMock.mockResolvedValueOnce(stale);
+  const lateRead = getSavedCv(new AbortController().signal);
+  await waitFor(() => expect(finishRead).toBeTypeOf("function"));
+  confirmCvDeletion();
+  expect(await screen.findByText("No CV saved yet.")).toBeVisible();
+  finishRead();
+  expect(await lateRead).toBeNull();
+  expect(screen.queryByRole("button", { name: "View current CV" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Delete current CV" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("CV text")).toHaveValue("My CV unsaved draft");
+  fireEvent.click(screen.getByRole("tab", { name: "Upload file" }));
+  expect(screen.getByText("Selected: unsaved.pdf")).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  await waitFor(() => expect(within(screen.getByRole("link", { name: /^My CV/ })).getByText("Not added")).toBeVisible());
+  expect(within(screen.getByRole("link", { name: /^Saved jobs/ })).getByText("1")).toBeVisible();
+  expect(within(screen.getByRole("link", { name: /^Comparisons/ })).getByText("2")).toBeVisible();
+  expect(screen.getByLabelText("Use saved job")).toHaveValue("7");
+  expect(screen.getByLabelText("Paste your CV text")).toHaveValue("Dashboard CV draft");
+  expect(screen.queryByText("Using your saved CV")).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Comparisons" }));
+  expect(await screen.findByText(/CV used for this comparison is no longer/)).toBeVisible();
+  expect(screen.getByRole("region", { name: /Matched requirements/ })).toBeVisible();
+  const mutations = fetchMock.mock.calls.filter(([, init]) => (init?.method ?? "GET") !== "GET");
+  expect(mutations.map(([url]) => url)).toEqual(["/api/login", "/api/cv"]);
+  expect(mutations[1][1]?.method).toBe("DELETE");
+  expect(new Headers(mutations[1][1]?.headers).get("X-CSRF-Protection")).toBe("1");
+  expect(parse).not.toHaveBeenCalled();
+});
+
+test("CV deletion cancels without changes and is disabled during saves and comparisons", async () => {
+  const remove = vi.fn();
+  let finish!: (response: Response) => void;
+  await renderCvDeletion(remove, () => new Promise((resolve) => { finish = resolve; }));
+  await showCurrentCv();
+  fireEvent.click(screen.getByRole("button", { name: "Delete current CV" }));
+  const dialog = screen.getByRole("dialog");
+  expect(dialog).toHaveTextContent("Comparisons may still contain excerpts from this CV");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  expect(remove).not.toHaveBeenCalled();
+  expect(screen.getByRole("button", { name: "View current CV" })).toBeVisible();
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("CV text"), { target: { value: "Explicit replacement" } });
+  fireEvent.click(screen.getByRole("button", { name: "Save replacement" }));
+  expect(screen.getByRole("button", { name: "Delete current CV" })).toBeDisabled();
+  finish(new Response(null, { status: 204 }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Delete current CV" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Dashboard" }));
+  fireEvent.change(screen.getByLabelText("Use saved job"), { target: { value: "7" } });
+  fireEvent.click(screen.getByRole("button", { name: "Compare" }));
+  await showCurrentCv();
+  expect(screen.getByRole("button", { name: "Delete current CV" })).toBeDisabled();
+  finish(Response.json({ detail: "Mock comparison failed" }, { status: 503 }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Delete current CV" })).toBeEnabled());
+  expect(remove).not.toHaveBeenCalled();
+});
+
+test("CV deletion keeps the saved CV on failure and reconciles 404 on retry", async () => {
+  let finish!: (response: Response) => void;
+  const remove = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+  await renderCvDeletion(remove);
+  await showCurrentCv();
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("CV text"), { target: { value: "Unsubmitted draft" } });
+  const dialog = confirmCvDeletion();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Deleting…" }));
+  expect(remove).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole("button", { name: "Save replacement" })).toBeDisabled();
+  expect(within(dialog).getByRole("status")).toHaveTextContent("Deleting CV");
+  finish(Response.json({ detail: "Temporarily unavailable" }, { status: 503 }));
+  expect(await within(dialog).findByRole("alert")).toHaveTextContent("Temporarily unavailable");
+  expect(screen.getByRole("button", { name: "View current CV" })).toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Delete CV" }));
+  finish(new Response(null, { status: 404 }));
+  expect(await screen.findByText("No CV saved yet.")).toBeVisible();
+  expect(screen.getByText("Your saved CV is no longer available. The display has been updated.")).toHaveAttribute("role", "status");
+  expect(screen.getByLabelText("CV text")).toHaveValue("Unsubmitted draft");
+  expect(remove).toHaveBeenCalledTimes(2);
 });

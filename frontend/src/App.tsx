@@ -3,6 +3,7 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type ChangeEvent,
   type DragEvent,
   type FormEvent,
@@ -22,6 +23,9 @@ import {
   getComparisonSummaries,
   deleteSavedComparison,
   deleteJob,
+  deleteCv,
+  isCvBusy,
+  subscribeCvActivity,
   isJobDeleted,
   getSavedCv,
   signIn,
@@ -1387,10 +1391,11 @@ function SavedComparisonHistory({ accountKey, job, comparisonId, onSelect,
   );
 }
 
-function MyCvView({ accountKey, visible, onSaved }: {
+function MyCvView({ accountKey, visible, onSaved, onDeleted }: {
   accountKey: number;
   visible: boolean;
   onSaved: () => void;
+  onDeleted: () => void;
 }) {
   const [text, setText] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1406,6 +1411,16 @@ function MyCvView({ accountKey, visible, onSaved }: {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const saveRequest = useRef<AbortController | null>(null);
+  const cvBusy = useSyncExternalStore(subscribeCvActivity, isCvBusy);
+  const [deleting, setDeleting] = useState(false);
+  const [notice, setNotice] = useState("");
+  const deleteTrigger = useRef<HTMLButtonElement | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
   // Match the backend's Unicode code-point limit, not UTF-16 code units.
   const textTooLong = [...draft].length > MAX_CV_TEXT_LENGTH;
   const inputValid = inputMethod === "file"
@@ -1424,7 +1439,7 @@ function MyCvView({ accountKey, visible, onSaved }: {
   }
 
   async function save() {
-    if (saveRequest.current || loading || error || !inputValid) return;
+    if (saveRequest.current || deleting || loading || error || !inputValid) return;
     setSaved(false);
     const controller = new AbortController();
     saveRequest.current = controller;
@@ -1492,7 +1507,7 @@ function MyCvView({ accountKey, visible, onSaved }: {
         </button>
       )}
       <div className="jobs-heading">
-        <h1>{preview ? "Current CV" : "My CV"}</h1>
+        <h1 ref={heading} tabIndex={-1}>{preview ? "Current CV" : "My CV"}</h1>
       </div>
       {loading ? (
         <p className="jobs-message" role="status">Loading saved CV…</p>
@@ -1527,14 +1542,27 @@ function MyCvView({ accountKey, visible, onSaved }: {
             <h2 id="current-cv-heading">Current CV</h2>
             <span className="comparison-saved-status">Saved</span>
           </div>
-          <button
-            type="button"
-            className="cv-save job-primary"
-            aria-label="View current CV"
-            onClick={() => setPreview(true)}
-          >
-            View <Icon name="arrow-right" />
-          </button>
+          <div className="current-cv-actions">
+            <button
+              type="button"
+              className="cv-save job-primary"
+              aria-label="View current CV"
+              onClick={() => setPreview(true)}
+            >
+              View <Icon name="arrow-right" />
+            </button>
+            <button type="button" className="comparison-delete-icon"
+              title="Delete current CV" aria-label="Delete current CV"
+              disabled={saving || cvBusy}
+              onClick={(event) => {
+                if (saveRequest.current || isCvBusy()) return;
+                deleteTrigger.current = event.currentTarget;
+                setNotice("");
+                setDeleting(true);
+              }}>
+              <Icon name="bin" />
+            </button>
+          </div>
         </section>
       )}
       {!preview && !loading && !error && (
@@ -1637,13 +1665,27 @@ function MyCvView({ accountKey, visible, onSaved }: {
           <button
             type="button"
             className="cv-save job-primary"
-            disabled={saving || !inputValid}
+            disabled={saving || deleting || !inputValid}
             onClick={() => void save()}
           >
             {saving ? "Saving…" : text === null ? "Save CV" : "Save replacement"}
           </button>
         </section>
       )}
+      <div className={notice ? "comparison-delete-notice" : "visually-hidden"} role="status" aria-live="polite">{notice}</div>
+      {deleting && <DeleteSavedItemDialog kind="CV" removeItem={deleteCv}
+        blocked={cvBusy} trigger={deleteTrigger} fallback={heading}
+        onCancel={() => setDeleting(false)}
+        onDeleted={(outcome) => {
+          setText(null);
+          setPreview(false);
+          setSaved(false);
+          setSaveError(null);
+          setDeleting(false);
+          setNotice(outcome === "deleted" ? "Current CV deleted."
+            : "Your saved CV is no longer available. The display has been updated.");
+          onDeleted();
+        }} />}
     </main>
   );
 }
@@ -2035,9 +2077,10 @@ function DashboardOverview({ accountKey, onNavigate, onView, onCvSaved, onJobSav
   );
 }
 
-function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, onCancel, onDeleted }: {
-  kind: "job" | "comparison";
-  identity: ReactNode;
+function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, onCancel, onDeleted, blocked = false }: {
+  kind: "job" | "comparison" | "CV";
+  identity?: ReactNode;
+  blocked?: boolean;
   removeItem: (signal: AbortSignal) => Promise<"deleted" | "missing">;
   trigger: RefObject<HTMLButtonElement | null>;
   fallback: RefObject<HTMLHeadingElement | null>;
@@ -2065,7 +2108,7 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
   }, [trigger, fallback]);
 
   async function remove() {
-    if (request.current) return;
+    if (request.current || blocked) return;
     const controller = new AbortController();
     request.current = controller;
     setPending(true);
@@ -2091,16 +2134,18 @@ function DeleteSavedItemDialog({ kind, identity, removeItem, trigger, fallback, 
       event.preventDefault();
       if (!request.current) onCancel();
     }}>
-    <h2 id="comparison-delete-title">Delete {kind}?</h2>
-    <p className="comparison-delete-identity">{identity}</p>
-    <p id="comparison-delete-description">{kind === "job"
+    <h2 id="comparison-delete-title">{kind === "CV" ? "Delete current CV?" : `Delete ${kind}?`}</h2>
+    {identity && <p className="comparison-delete-identity">{identity}</p>}
+    <p id="comparison-delete-description">{kind === "CV"
+      ? "This removes your saved CV. Your jobs and saved comparisons will remain. Comparisons may still contain excerpts from this CV; you can delete them separately on the Comparisons page."
+      : kind === "job"
       ? "This deletes this saved job and all its saved comparisons. Your saved CV will remain. You can’t undo this action."
       : "This removes this saved comparison and its results. Your saved job and CV will remain. You can’t undo this action."}</p>
-    {error && <p className="form-error" role="alert">Could not delete the {kind}: {error} Your saved {kind} has not been removed from this list. Try Delete {kind} again.</p>}
+    {error && <p className="form-error" role="alert">Could not delete the {kind}: {error} Your saved {kind} has not been removed from this {kind === "CV" ? "display" : "list"}. Try Delete {kind} again.</p>}
     {pending && <p role="status">Deleting {kind}…</p>}
     <div className="comparison-delete-dialog__actions">
       <button ref={cancel} type="button" className="text-button" disabled={pending} onClick={onCancel}>Cancel</button>
-      <button type="button" className="cv-save comparison-delete-confirm" disabled={pending}
+      <button type="button" className="cv-save comparison-delete-confirm" disabled={pending || blocked}
         onClick={() => void remove()}>{pending ? "Deleting…" : `Delete ${kind}`}</button>
     </div>
   </dialog>;
@@ -3567,6 +3612,10 @@ function App() {
           accountKey={accountKey}
           visible={view === "my-cv"}
           onSaved={handleCvSaved}
+          onDeleted={() => {
+            handleCvSaved();
+            setAnotherDashboardComparison(true);
+          }}
         />
       )}
       {accountKey && user && (

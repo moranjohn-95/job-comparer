@@ -59,6 +59,32 @@ export class ApiError extends Error {
 let sessionGeneration = 0
 let deletedComparisonIds = new Set<number>()
 let deletedJobIds = new Set<number>()
+// Coordinate this interface only; this is not a server-side cancellation lock.
+// Retain the latest confirmed value so pre-mutation reads cannot restore it.
+let cvActivity = { pending: 0, deleting: false, revision: 0, text: null as string | null }
+const cvActivityListeners = new Set<() => void>()
+export const isCvBusy = () => cvActivity.pending > 0
+export function subscribeCvActivity(listener: () => void): () => void {
+  cvActivityListeners.add(listener)
+  return () => { cvActivityListeners.delete(listener) }
+}
+async function withCvActivity<T>(
+  deleting: boolean, run: (state: typeof cvActivity) => Promise<T>,
+): Promise<T> {
+  const state = cvActivity
+  if (state.deleting || (deleting && state.pending > 0)) {
+    throw new ApiError('Wait for the current CV or comparison operation to finish, then retry.')
+  }
+  state.pending += 1
+  if (deleting) state.deleting = true
+  cvActivityListeners.forEach((listener) => listener())
+  try { return await run(state) }
+  finally {
+    state.pending -= 1
+    if (deleting) state.deleting = false
+    cvActivityListeners.forEach((listener) => listener())
+  }
+}
 export function isJobDeleted(jobId: number): boolean {
   return deletedJobIds.has(jobId)
 }
@@ -66,6 +92,8 @@ export function resetSessionRequests(): void {
   sessionGeneration += 1
   deletedComparisonIds = new Set()
   deletedJobIds = new Set()
+  cvActivity = { pending: 0, deleting: false, revision: 0, text: null }
+  cvActivityListeners.forEach((listener) => listener())
 }
 
 async function apiFetch(
@@ -154,9 +182,12 @@ export async function getCurrentUser(signal?: AbortSignal): Promise<CurrentUser>
 export async function getSavedCv(
   signal: AbortSignal,
 ): Promise<string | null> {
+  const state = cvActivity
+  const revision = state.revision
   const response = await apiFetch(`${API_URL}/cv`, {
     method: 'GET', signal,
   })
+  if (state.revision !== revision) return state.text
   if (response.status === 404) return null
   if (!response.ok) throw await getApiError(response)
   const body: unknown = await response.json()
@@ -164,42 +195,62 @@ export async function getSavedCv(
     response.status === 206 || typeof body !== 'object' || body === null ||
     !('text' in body) || typeof body.text !== 'string'
   ) throw new ApiError('The saved CV response was invalid. Please retry.')
-  return body.text
+  return state.revision !== revision ? state.text : body.text
+}
+
+export async function deleteCv(signal: AbortSignal): Promise<'deleted' | 'missing'> {
+  return withCvActivity(true, async (state) => {
+    const response = await apiFetch(`${API_URL}/cv`, { method: 'DELETE', signal })
+    if (response.status !== 204 && response.status !== 404) {
+      throw await getApiError(response)
+    }
+    state.revision += 1
+    state.text = null
+    return response.status === 204 ? 'deleted' : 'missing'
+  })
 }
 
 export async function saveCvText(
   text: string, signal?: AbortSignal,
 ): Promise<void> {
-  const response = await apiFetch(`${API_URL}/cv`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-    signal,
+  return withCvActivity(false, async (state) => {
+    const response = await apiFetch(`${API_URL}/cv`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+      signal,
+    })
+    if (!response.ok) throw await getApiError(response)
+    state.revision += 1
+    state.text = text
   })
-  if (!response.ok) throw await getApiError(response)
 }
 
 export async function uploadCv(
   file: File, signal?: AbortSignal,
 ): Promise<string> {
-  const form = new FormData()
-  form.append('file', file)
-  const response = await apiFetch(`${API_URL}/cv/upload`, {
-    method: 'POST',
-    body: form,
-    signal,
+  return withCvActivity(false, async (state) => {
+    const form = new FormData()
+    form.append('file', file)
+    const response = await apiFetch(`${API_URL}/cv/upload`, {
+      method: 'POST',
+      body: form,
+      signal,
+    })
+    if (!response.ok) throw await getApiError(response)
+    const body: unknown = await response.json()
+    if (
+      typeof body !== 'object' || body === null ||
+      !('text' in body) || typeof body.text !== 'string'
+    ) {
+      throw new ApiError(
+        'The upload response was invalid. Reload My CV to check the saved text.',
+      )
+    }
+    state.revision += 1
+    state.text = body.text
+    return body.text
   })
-  if (!response.ok) throw await getApiError(response)
-  const body: unknown = await response.json()
-  if (
-    typeof body !== 'object' || body === null ||
-    !('text' in body) || typeof body.text !== 'string'
-  ) {
-    throw new ApiError(
-      'The upload response was invalid. Reload My CV to check the saved text.',
-    )
-  }
-  return body.text
 }
 
 export async function createJob(
@@ -308,15 +359,17 @@ export async function getJob(
 export async function compareJob(
   jobId: number,
 ): Promise<{ result: ComparisonResult; comparisonId: number | null }> {
-  const response = await apiFetch(`${API_URL}/jobs/${jobId}/compare`, {
-    method: 'POST',
+  return withCvActivity(false, async () => {
+    const response = await apiFetch(`${API_URL}/jobs/${jobId}/compare`, {
+      method: 'POST',
+    })
+    if (!response.ok) throw await getApiError(response)
+    const body: unknown = await response.json()
+    const savedId = response.headers?.get('X-Comparison-Id')
+    const comparisonId = savedId && /^[1-9]\d*$/.test(savedId)
+      && Number.isSafeInteger(Number(savedId)) ? Number(savedId) : null
+    return { result: parseComparisonResult(body), comparisonId }
   })
-  if (!response.ok) throw await getApiError(response)
-  const body: unknown = await response.json()
-  const savedId = response.headers?.get('X-Comparison-Id')
-  const comparisonId = savedId && /^[1-9]\d*$/.test(savedId)
-    && Number.isSafeInteger(Number(savedId)) ? Number(savedId) : null
-  return { result: parseComparisonResult(body), comparisonId }
 }
 
 function parseComparisonResult(body: unknown): ComparisonResult {
@@ -409,6 +462,8 @@ export async function getSavedComparisons(
 ): Promise<SavedComparison[]> {
   const deleted = deletedComparisonIds
   const deletedJobs = deletedJobIds
+  const cvState = cvActivity
+  const cvRevision = cvState.revision
   const response = await apiFetch(`${API_URL}/jobs/${jobId}/comparisons`, {
     method: 'GET', signal,
   })
@@ -422,6 +477,8 @@ export async function getSavedComparisons(
   }
   return body.map((entry: unknown) => parseSavedComparison(entry, jobId))
     .filter((entry) => !deleted.has(entry.id) && !deletedJobs.has(jobId))
+    .map((entry) => cvState.revision !== cvRevision
+      ? { ...entry, cv_outdated: true } : entry)
 }
 
 export async function getSavedComparison(
@@ -429,6 +486,8 @@ export async function getSavedComparison(
 ): Promise<SavedComparison> {
   const deleted = deletedComparisonIds
   const deletedJobs = deletedJobIds
+  const cvState = cvActivity
+  const cvRevision = cvState.revision
   const response = await apiFetch(
     `${API_URL}/jobs/${jobId}/comparisons/${comparisonId}`,
     { method: 'GET', signal },
@@ -441,7 +500,7 @@ export async function getSavedComparison(
   if (deleted.has(comparisonId) || deletedJobs.has(jobId)) {
     throw new ApiError('This comparison is no longer available.', 404)
   }
-  return entry
+  return cvState.revision !== cvRevision ? { ...entry, cv_outdated: true } : entry
 }
 
 export async function deleteSavedComparison(

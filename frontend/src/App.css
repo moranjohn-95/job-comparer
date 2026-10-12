@@ -1220,8 +1220,12 @@
   background: transparent;
   cursor: pointer;
 }
-.comparison-delete-icon:hover {
+.comparison-delete-icon:hover:not(:disabled) {
   background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+.comparison-delete-icon:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .jobs-table .comparison-delete-icon .nav-icon {
   width: 20px;
@@ -1327,6 +1331,15 @@
 }
 .current-cv-strip {
   justify-content: space-between;
+}
+.current-cv-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.current-cv-actions .comparison-delete-icon .nav-icon {
+  width: 20px;
+  height: 20px;
 }
 .current-cv-summary h2 {
   margin: 0;
