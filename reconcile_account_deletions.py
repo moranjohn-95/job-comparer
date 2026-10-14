@@ -5,8 +5,10 @@ DATABASE_URL. Stopping writers and enforcing maintenance remain operator tasks.
 """
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
+from pathlib import Path
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -31,6 +33,7 @@ from models import (
     User,
     VerificationToken,
 )
+from recovery_interlock import evidence_operation, record_evidence
 
 
 class RecoveryError(Exception):
@@ -78,16 +81,18 @@ def validate_metadata(ledger: AccountDeletionLedger,
     return cutover
 
 
-def recovery_url(database_name: str):
-    # Require a purpose-named restored database and an explicit URL variable.
+def recovery_url(database_name: str, operation_id=None):
+    # Non-purpose-named targets also require a matching root-owned operation,
+    # checked by evidence_operation before any AWS or database access.
     # Never fall back to DATABASE_URL, PGDATABASE or the app's engine factory.
     raw = os.getenv("RECOVERY_DATABASE_URL", "")
-    if not raw or not re.fullmatch(
+    if not raw or not database_name or (not operation_id and not re.fullmatch(
         r"job_comparer_recovery_[A-Za-z0-9_]+", database_name,
-    ):
+    )):
         raise RecoveryError(
             "Set RECOVERY_DATABASE_URL and explicitly select a database "
-            "named job_comparer_recovery_<name>"
+            "named job_comparer_recovery_<name>, or bind --operation-id "
+            "to an explicit root-controlled recovery target"
         )
     url = make_url(raw)
     if (url.get_backend_name() != "postgresql"
@@ -103,6 +108,40 @@ def count_rows(session: Session, model, condition=None) -> int:
     return session.scalar(statement)
 
 
+def validate_uuid_schema(session: Session) -> None:
+    """Require established UUID schema; never repair a restored identity."""
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    valid = session.scalar(text("""
+        SELECT EXISTS (
+            SELECT 1 FROM pg_attribute a
+            JOIN pg_constraint c ON c.conrelid = a.attrelid
+            WHERE a.attrelid = 'public.users'::regclass
+              AND a.attname = 'account_uuid' AND NOT a.attisdropped
+              AND a.atttypid = 'uuid'::regtype AND a.attnotnull
+              AND c.contype = 'u' AND c.convalidated
+              AND c.conkey = ARRAY[a.attnum]
+        )
+    """))
+    heads = list(session.scalars(text(
+        "SELECT version_num FROM public.alembic_version"
+    )))
+    scripts = ScriptDirectory.from_config(Config(str(
+        Path(__file__).resolve().parent / "alembic.ini"
+    )))
+    if not valid or not heads or len(set(heads)) != len(heads):
+        raise RecoveryError("Established UUID schema is required")
+    for head in heads:
+        revision = scripts.get_revision(head)
+        if (revision is None or revision.revision != head
+                or not any(item.revision == "0010_account_uuid"
+                           for item in scripts.walk_revisions(
+                               base="base", head=head,
+                           ))):
+            raise RecoveryError("Established UUID ancestry is required")
+
+
 def reconcile(session: Session, intents: set[UUID], database_name: str,
               apply: bool) -> dict[str, int]:
     if not apply:
@@ -111,6 +150,7 @@ def reconcile(session: Session, intents: set[UUID], database_name: str,
     session.execute(text("SET LOCAL statement_timeout = '60s'"))
     if session.scalar(select(func.current_database())) != database_name:
         raise RecoveryError("Connected database does not match selection")
+    validate_uuid_schema(session)
     # A pre-UUID restore fails this query; never migrate/backfill on recovery.
     total, nonnull, unique = session.execute(select(
         func.count(User.id), func.count(User.account_uuid),
@@ -167,6 +207,32 @@ def reconcile(session: Session, intents: set[UUID], database_name: str,
     return counts
 
 
+def run_reconciliation(args, url):
+    ledger = AccountDeletionLedger()
+    now = datetime.now(timezone.utc)
+    cutover = validate_metadata(ledger, args, now)
+    intents = ledger.get_recovery_intents(cutover, now)
+    # All external evidence is validated before opening the database.
+    engine = create_engine(
+        url, isolation_level="REPEATABLE READ", hide_parameters=True,
+        connect_args={"connect_timeout": 5},
+    )
+    try:
+        with Session(engine) as session:
+            counts = reconcile(
+                session, intents, args.recovery_database, args.apply,
+            )
+            if args.apply:
+                session.commit()
+            else:
+                session.rollback()
+            # Session context rolls back automatically on any exception.
+    finally:
+        engine.dispose()
+    return {"mode": "applied" if args.apply else "dry-run",
+            "validated_intents": len(intents), "counts": counts}
+
+
 def main() -> int:
     parser = RecoveryParser(description=__doc__)
     parser.add_argument("--recovery-database", required=True)
@@ -174,34 +240,22 @@ def main() -> int:
     parser.add_argument("--backup-key", required=True)
     parser.add_argument("--backup-version-id", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--operation-id")
     try:
         args = parser.parse_args()
-        url = recovery_url(args.recovery_database)
-        ledger = AccountDeletionLedger()
-        now = datetime.now(timezone.utc)
-        cutover = validate_metadata(ledger, args, now)
-        intents = ledger.get_recovery_intents(cutover, now)
-        # All external evidence is validated before opening the database.
-        engine = create_engine(
-            url, isolation_level="REPEATABLE READ", hide_parameters=True,
-            connect_args={"connect_timeout": 5},
-        )
-        try:
-            with Session(engine) as session:
-                counts = reconcile(
-                    session, intents, args.recovery_database, args.apply,
-                )
-                if args.apply:
-                    session.commit()
-                else:
-                    session.rollback()
-                # Session context rolls back automatically on any exception.
-        finally:
-            engine.dispose()
-        print(json.dumps({
-            "mode": "applied" if args.apply else "dry-run",
-            "validated_intents": len(intents), "counts": counts,
-        }, sort_keys=True))
+        url = recovery_url(args.recovery_database, args.operation_id)
+        if args.apply and not args.operation_id:
+            raise RecoveryError("--apply requires the current --operation-id")
+        context = (evidence_operation(
+            args.operation_id, args.expected_dataset_id, url, "recovery",
+            apply=args.apply,
+        ) if args.operation_id else nullcontext())
+        with context as state:
+            result = run_reconciliation(args, url)
+            if state is not None and args.apply:
+                # No evidence for failed/uncertain commits or dry-run results.
+                record_evidence(state, args)
+        print(json.dumps(result, sort_keys=True))
         return 0
     except (RecoveryError, LedgerError) as error:
         print(f"Recovery refused: {error}. Keep maintenance mode enabled.",

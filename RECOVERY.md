@@ -11,11 +11,11 @@ instance**, and anything writing/pruning the ledger. Keep them stopped through
 restore, reconciliation and verification: S3 pagination is not an atomic
 snapshot. Restrict the restored database to the recovery operator.
 
-The **deployment/startup interlock and production UUID/backup cutover remain
-separate outstanding work**. This command alone cannot enforce maintenance,
-stop writers, establish trustworthy backup provenance, or prevent a later
-restore from bypassing it. Do not deploy account deletion before these gaps
-are addressed.
+The root-controlled startup interlock below must be installed and rehearsed;
+it is not enabled by committing these files. Production UUID/backup cutover
+and isolated runtime verification remain outstanding. The commands cannot
+enforce maintenance, stop writers or establish trustworthy restore provenance.
+Do not deploy account deletion before those operational prerequisites are met.
 
 Install the existing requirements, including boto3. Supply the four existing
 `DELETION_LEDGER_*` settings and normal AWS credentials (the EC2 role in
@@ -179,13 +179,118 @@ review. Temporary local files are removed on exit, as in the original script.
 
 Do not use an incomplete pair as a recovery-ready backup or manufacture a
 later capture timestamp. A later run creates a new key/pair. `control.json`,
-trusted cutover values, the 31-day/floor checks, the maintenance/startup interlock
-and verified restore provenance remain separate prerequisites.
+trusted cutover values, the 31-day/floor checks, installation of the startup
+interlock and verified restore provenance remain separate prerequisites.
+
+## Root-controlled startup interlock
+
+`recovery_interlock.py` maintains `/var/lib/job-comparer-recovery/clearance.json`
+outside the database and repository. The directory is root-owned `0755`; state
+and lock files are root-owned `0644`. Only root may mutate them. They contain
+operation/dataset UUIDs, host/port/database name, phase, timestamps and backup
+key/version, **not** passwords, URLs, email addresses or account data. Protected
+parents, regular files and ownership/modes are checked. Do not include this
+state in database restores or restore an older clearance file with a machine
+snapshot. Root/sudo-capable operators can override this control; the API user
+must not be granted privileged access to modify clearance.
+
+Each `begin-recovery` atomically replaces old clearance with a fresh operation
+UUID and blocked state, with file/directory fsync. A shared/exclusive file lock
+serializes checks, evidence generation and approval; concurrent operations fail
+closed rather than wait indefinitely. Evidence is not approval. An apply attempt
+clears previous evidence before work, and records new evidence only after its
+database commit returns successfully. A failed/uncertain commit leaves startup
+blocked. If evidence persistence fails after commit, keep maintenance enabled
+and rerun reconciliation. Never import evidence from an old operation.
+
+### Install the check (operator actions; not performed here)
+
+Preserve the existing unit, `.env`, untracked `compose.production.yaml` and
+working backup installation first. Stop `job-comparer.service` and all writers,
+hold traffic in maintenance, pause the backup timer and wait for any running
+backup to finish. Do not migrate/restore concurrently with backups. Review the
+trusted checkout/dependencies before executing operator commands as root.
+
+```sh
+cd /home/ubuntu/job-comparer
+sudo install -d -o root -g root -m 0755 /usr/local/lib/job-comparer-recovery
+sudo install -o root -g root -m 0644 recovery_interlock.py deletion_ledger.py /usr/local/lib/job-comparer-recovery/
+sudo install -d -o root -g root -m 0755 /etc/systemd/system/job-comparer.service.d
+sudo install -o root -g root -m 0644 operations/recovery/job-comparer.service.d/20-recovery-interlock.conf /etc/systemd/system/job-comparer.service.d/
+sudo systemctl daemon-reload
+```
+
+The drop-in adds only `ExecStartPre` using the confirmed application Python;
+it does not replace the existing unit, `User=ubuntu`, environment file or
+`ExecStart`. Existing pre-start commands are retained. The check runs as ubuntu,
+reads the service's `DATABASE_URL` and `DELETION_LEDGER_DATASET_ID`, and performs
+no AWS/database calls or writes. Missing, malformed, unapproved or mismatched
+state exits nonzero and blocks startup. A valid approval remains valid for normal
+restarts; it does not expire merely because the original backup ages. Reinstall
+the root-owned Python copies when these helpers change.
+
+### Initial cutover (not a restore)
+
+Provide the following identifiers from the cutover plan, never guessed values:
+
+```sh
+sudo /home/ubuntu/job-comparer/.venv/bin/python recovery_interlock.py begin-cutover \
+  --expected-dataset-id DATASET_UUID \
+  --database-host DB_HOST --database-port DB_PORT --database-name DB_NAME
+```
+
+Record the printed operation UUID. `begin-cutover` refuses an existing state
+file; it is not a shortcut for resetting an earlier recovery. Then complete the
+real UUID migration, configure/protect the dataset and ledger, run the new backup
+workflow and provision trusted `control.json` as described above. Never invent
+cutover times. The following evidence command requires all of these:
+
+- Exact configured dataset and backup key/version, validated with the existing
+  control/sidecar contract, cutover floor and 31-day age limit.
+- Root-protected `/var/lib/job-comparer-backup/last-success` matching that dump
+  URI, written after cutover by the new workflow **only after dump and sidecar
+  version-specific byte verification**. Preserve that workflow and trusted IAM;
+  do not manually manufacture this marker. It is local backup evidence, not
+  proof of a successful restore rehearsal.
+- The explicit database's non-null, unique UUID column and known migration
+  ancestry at or after `0010_account_uuid`, checked read-only. No migrations or
+  replacement UUIDs are generated by the interlock.
+- A fully validated ledger with no deletion intents: if intents already exist,
+  use `begin-recovery` and reconciliation instead of initial-cutover approval.
+
+Set `CUTOVER_DATABASE_URL` and the four `DELETION_LEDGER_*` variables in a
+secrets-safe operator environment. Do not source the application `.env` as
+shell code or put URLs/credentials on command lines. Then:
+
+```sh
+sudo --preserve-env=CUTOVER_DATABASE_URL,DELETION_LEDGER_BUCKET,DELETION_LEDGER_REGION,DELETION_LEDGER_PREFIX,DELETION_LEDGER_DATASET_ID \
+  /home/ubuntu/job-comparer/.venv/bin/python recovery_interlock.py record-cutover \
+  --operation-id OPERATION_UUID --expected-dataset-id DATASET_UUID \
+  --backup-key production/postgres/ORIGINAL_DUMP_KEY \
+  --backup-version-id ORIGINAL_S3_VERSION_ID
+```
+
+This records evidence only. Complete the isolated runtime rehearsal and other
+cutover checks before the explicit approval step below. A failed check must be
+fixed and rerun, never bypassed by editing clearance. Use the instance role,
+not static AWS credentials.
 
 ## Operator sequence
 
-1. Establish isolation/maintenance above. Restore the verified eligible dump
-   into a dedicated database named `job_comparer_recovery_<name>`.
+1. Establish isolation/maintenance above. **Before any restore**, invalidate
+   old clearance and bind a fresh operation to the exact intended target:
+
+   ```sh
+   sudo /home/ubuntu/job-comparer/.venv/bin/python recovery_interlock.py begin-recovery \
+     --expected-dataset-id DATASET_UUID \
+     --database-host DB_HOST --database-port DB_PORT --database-name DB_NAME
+   ```
+
+   Require exit zero and record the printed UUID before proceeding. Restore
+   the verified eligible dump into that target. Use an isolated
+   `job_comparer_recovery_<name>` database for rehearsals. The target can be the
+   offline production name only with a matching root-controlled operation;
+   standalone dry-runs retain the purpose-named recovery database restriction.
 2. Supply its PostgreSQL SQLAlchemy URL through `RECOVERY_DATABASE_URL`, using
    the `postgresql+psycopg` driver and a secrets-safe operator environment.
    The command never falls back to application `DATABASE_URL`. It checks both
@@ -193,19 +298,72 @@ and verified restore provenance remain separate prerequisites.
 3. Run a dry-run, substituting independently verified identifiers:
 
    ```sh
-   python reconcile_account_deletions.py \
-     --recovery-database job_comparer_recovery_example \
+   /home/ubuntu/job-comparer/.venv/bin/python reconcile_account_deletions.py \
+     --recovery-database DB_NAME --operation-id OPERATION_UUID \
      --expected-dataset-id DATASET_UUID \
      --backup-key production/postgres/ORIGINAL_DUMP_KEY \
      --backup-version-id ORIGINAL_S3_VERSION_ID
    ```
 
-4. Review the count-only JSON summary. Repeat the same command with `--apply`
-   to change the restored database. Dry-run uses a read-only transaction;
-   apply re-fetches and validates the complete ledger before database access.
+4. Review the count-only JSON summary. Apply now requires the current
+   `--operation-id` and root access to record evidence. With the same explicit
+   secrets-safe operator environment, run:
+
+   ```sh
+   sudo --preserve-env=RECOVERY_DATABASE_URL,DELETION_LEDGER_BUCKET,DELETION_LEDGER_REGION,DELETION_LEDGER_PREFIX,DELETION_LEDGER_DATASET_ID \
+     /home/ubuntu/job-comparer/.venv/bin/python reconcile_account_deletions.py \
+     --recovery-database DB_NAME --operation-id OPERATION_UUID \
+     --expected-dataset-id DATASET_UUID \
+     --backup-key production/postgres/ORIGINAL_DUMP_KEY \
+     --backup-version-id ORIGINAL_S3_VERSION_ID --apply
+   ```
+
+   Dry-run uses a read-only transaction and never records evidence. Apply
+   re-fetches and validates the complete ledger before database access.
 5. Require exit code zero and an `applied` result. Rerun dry-run to confirm
    zero matching accounts, sessions and verification tokens before proceeding
-   with the separately controlled deployment/startup process.
+   with explicit approval below. An old operation ID, different dataset or
+   different host/port/database cannot produce or reuse evidence. Do not rename
+   or copy the database after reconciliation: that is a new recovery operation.
+
+### Approve, then start (both workflows)
+
+Keep writers stopped and traffic in maintenance through operator review. Set
+the operator environment's `DATABASE_URL` and `DELETION_LEDGER_DATASET_ID` to
+the actual intended API settings, using secrets-safe handling. They must match
+the evidenced target and dataset. Hostnames are compared case-insensitively,
+default port is 5432; aliases/renames are not guessed. Alternate libpq routing
+via query parameters or environment is rejected (SSL query options are allowed).
+
+```sh
+sudo --preserve-env=DATABASE_URL,DELETION_LEDGER_DATASET_ID \
+  /home/ubuntu/job-comparer/.venv/bin/python recovery_interlock.py approve \
+  --operation-id OPERATION_UUID
+sudo systemctl start job-comparer.service
+```
+
+Only evidenced operations can be approved. Confirm the startup check and API
+health before releasing maintenance and re-enabling the existing backup timer.
+The actual service configuration must point to the **same** target; approval
+does not rewrite `.env`. Preserve the backup script's `job_comparer_prod` guard
+for the production deployment. On any failure keep maintenance; a fresh restore
+always starts with `begin-recovery`, even if an earlier operation was approved.
+
+**Limits:** `ExecStartPre` does not stop an already-running API, block direct
+manual Uvicorn execution, verify which dump was restored, or detect restores
+that bypass this procedure. Root can override the files/unit. Host/port/name
+binding is not a PostgreSQL physical-instance fingerprint. Stop old instances
+and all writers, protect routing/configuration and do not restore clearance
+alongside a machine image. This is an explicit operator interlock, not an
+automatic recovery platform or a defence against a privileged operator.
+
+No runtime checks have been performed. Before deployment rehearse missing/
+mismatched clearance, begin invalidation, stale-operation rejection, failed or
+uncertain apply, successful apply/approval, normal restart and dataset/target
+changes using an isolated database/ledger and disposable records. Confirm actual
+systemd environment/permissions, AWS metadata access and backup verification.
+Production migration, IAM/lifecycle protection, trusted control provisioning
+and the isolated restore rehearsal remain required; these files do none of them.
 
 Every valid intent is authoritative, even without a completion. Apply uses
 the shared AI-usage lock before account-row locks and deletes matching users
