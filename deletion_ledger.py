@@ -101,6 +101,18 @@ def _utc_timestamp(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def parse_ledger_timestamp(value: object) -> datetime:
+    """Validate the canonical UTC format shared by records and metadata."""
+    try:
+        if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", value
+        ):
+            raise ValueError
+        return datetime.fromisoformat(value)
+    except ValueError:
+        raise LedgerRecordError("Invalid ledger timestamp") from None
+
+
 def _unique_fields(pairs: list) -> dict:
     result = {}
     for name, value in pairs:
@@ -149,19 +161,21 @@ class AccountDeletionLedger:
                 or body["schema_version"] != 1
                 or body["dataset_id"] != self.settings.dataset_id
                 or body["account_uuid"] != str(account_uuid)
-                or not isinstance(body[field], str)
-                or not re.fullmatch(
-                    r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", body[field]
-                )
             ):
                 raise ValueError
-            _utc_timestamp(datetime.fromisoformat(body[field]))
+            parse_ledger_timestamp(body[field])
         except (ValueError, TypeError, LedgerRecordError):
             raise LedgerRecordError("Invalid ledger record") from None
         return body
 
     def _read(self, account_uuid: UUID, kind: RecordKind) -> dict | None:
         key = self._key(account_uuid, kind)
+        body = self._read_json(key)
+        if body is None:
+            return None
+        return self._validate(body, account_uuid, kind)
+
+    def _read_json(self, key: str) -> dict | None:
         try:
             response = self._s3.get_object(
                 Bucket=self.settings.bucket, Key=key,
@@ -181,9 +195,97 @@ class AccountDeletionLedger:
             if len(raw) > _MAX_RECORD_BYTES:
                 raise ValueError
             body = json.loads(raw, object_pairs_hook=_unique_fields)
+            if not isinstance(body, dict):
+                raise ValueError
         except (ValueError, UnicodeError, RecursionError):
             raise LedgerRecordError("Invalid ledger record") from None
-        return self._validate(body, account_uuid, kind)
+        return body
+
+    def get_recovery_metadata(self, backup_key: str) -> tuple[dict, dict]:
+        """Read required metadata; the recovery command validates its fields.
+
+        The sidecar describes the original capture, not a later copy/upload.
+        Never create either metadata object during a recovery operation.
+        """
+        if (not backup_key.startswith("production/postgres/")
+                or backup_key.endswith("/")
+                or len(backup_key) > 900):
+            raise LedgerRecordError("Invalid recovery backup key")
+        control = self._read_json(f"{self.settings.prefix}control.json")
+        backup = self._read_json(f"{backup_key}.metadata.json")
+        if control is None or backup is None:
+            raise LedgerRecordError("Required recovery metadata is missing")
+        return control, backup
+
+    def get_recovery_intents(self, cutover: datetime,
+                             now: datetime) -> set[UUID]:
+        """Fully validate all pages/records before returning authoritative IDs.
+
+        Writers and pruning must be stopped: paginated S3 listing is not an
+        atomic snapshot. Unknown keys and orphan completions fail closed.
+        """
+        keys = set()
+        tokens = set()
+        token = None
+        while True:
+            options = {"ContinuationToken": token} if token else {}
+            try:
+                page = self._s3.list_objects_v2(
+                    Bucket=self.settings.bucket, Prefix=self.settings.prefix,
+                    **options,
+                )
+            except (ClientError, BotoCoreError, OSError):
+                raise LedgerUnavailable("Ledger listing unavailable") from None
+            contents = page.get("Contents", [])
+            if (type(page.get("IsTruncated")) is not bool
+                    or not isinstance(contents, list)
+                    or type(page.get("KeyCount")) is not int
+                    or page["KeyCount"] != len(contents)):
+                raise LedgerRecordError("Invalid ledger listing")
+            for item in contents:
+                key = item.get("Key") if isinstance(item, dict) else None
+                if not isinstance(key, str) or key in keys:
+                    raise LedgerRecordError("Invalid or repeated ledger key")
+                keys.add(key)
+            if not page["IsTruncated"]:
+                break
+            token = page.get("NextContinuationToken")
+            if not isinstance(token, str) or not token or token in tokens:
+                raise LedgerRecordError("Invalid ledger pagination")
+            tokens.add(token)
+        control_key = f"{self.settings.prefix}control.json"
+        if control_key not in keys:
+            raise LedgerRecordError("Ledger control record is missing")
+        records = {}
+        for key in sorted(keys - {control_key}):
+            relative = key.removeprefix(self.settings.prefix)
+            match = re.fullmatch(
+                r"([0-9a-f-]{36})/(intent|completion)\.json", relative,
+            )
+            try:
+                if match is None:
+                    raise ValueError
+                account_uuid = UUID(match[1])
+                kind = match[2]
+                if key != self._key(account_uuid, kind):
+                    raise ValueError
+            except ValueError:
+                raise LedgerRecordError("Invalid ledger key") from None
+            body = self._read(account_uuid, kind)
+            if body is None:
+                raise LedgerRecordError("Listed ledger record is missing")
+            timestamp = parse_ledger_timestamp(body[_TIMESTAMP_FIELD[kind]])
+            if not cutover <= timestamp <= now:
+                raise LedgerRecordError("Ledger timestamp outside valid era")
+            records[account_uuid, kind] = body
+        for (account_uuid, kind), body in records.items():
+            if kind == "completion":
+                intent = records.get((account_uuid, "intent"))
+                if intent is None:
+                    raise LedgerRecordError("Completion has no intent")
+                self._check_completion(intent, body)
+        return {account_uuid for account_uuid, kind in records
+                if kind == "intent"}
 
     def get_intent(self, account_uuid: UUID) -> dict | None:
         """None means S3 returned NoSuchKey, never an unavailable read."""
