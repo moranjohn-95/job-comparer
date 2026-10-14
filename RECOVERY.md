@@ -29,9 +29,10 @@ Disable SDK/SQL debug logging; never put database URLs on command lines.
 
 ## Required metadata contract
 
-These metadata objects do not yet exist by virtue of this command. Provisioning
-them securely is part of cutover/backup work, not recovery. Do not fabricate
-timestamps or metadata to make an old dump pass validation.
+The reconciliation command creates neither metadata nor control records.
+The repository-managed backup workflow below creates sidecars for new backups;
+`control.json` still requires separate, evidence-based cutover provisioning.
+Do not fabricate timestamps or metadata to make an old dump pass validation.
 
 Store `control.json` under the configured ledger prefix, normally
 `production/account-deletions/v1/`. Its exact fields are:
@@ -70,6 +71,116 @@ or upload does not restart the 31-day window.
 
 Never apply the UUID migration to a pre-UUID restore to qualify it: that would
 generate unrelated identities. Such backups are not eligible for this flow.
+
+## Production backup sidecars
+
+`operations/backup/` contains the supplied production script, service and timer
+with metadata support. Nothing is installed or enabled by committing these
+files. They retain the existing production Compose path, database-name guard,
+root service, exclusive lock, restrictive permissions, custom-format check,
+AES256 encryption, three-attempt AWS retry bound and 15-minute service timeout.
+The timer remains **03:00 UTC daily**, with `Persistent=true`.
+
+The script requires an explicit `DELETION_LEDGER_DATASET_ID` and reads the
+database before capture to confirm the non-null, uniquely constrained UUID
+column. Every recorded Alembic head must be an exact known revision equal to
+`0010_account_uuid` or a descendant in the deployed repository's Alembic graph.
+Unknown, empty or pre-UUID revision states and incompatible schemas fail closed.
+Later descendant migrations need no guard edit; keep the deployed migration
+files current. Graph inspection does not execute `env.py` or run migrations.
+Do not run migrations concurrently with backups. Do not install
+this version before the source migration has actually been applied, or scheduled
+backups will fail rather than falsely attest UUID readiness.
+
+The script captures UTC immediately before `pg_dump`, then obtains `VersionId`
+from `PutObject` or `CompleteMultipartUpload`, never from a latest-object lookup.
+Large dumps retain multipart support. Both the dump and its JSON sidecar are
+downloaded by their exact returned version IDs and compared byte-for-byte with
+the local originals. Unique keys and conditional creation prevent overwrites.
+Only then is `/var/lib/job-comparer-backup/last-success` replaced, retaining its
+existing single-line dump-URI format. This marker confirms verified artifacts,
+**not** all account-deletion recovery prerequisites or a successful DB restore.
+
+### Configuration and installation (operator actions, not performed here)
+
+Prerequisites: the supplied production Docker/Compose deployment, GNU coreutils,
+Python 3, the application's existing Alembic installation, and AWS CLI v2 at
+`/snap/bin/aws` supporting
+`--if-none-match` on both `put-object` and `complete-multipart-upload`, plus
+SHA256 multipart checksums. The bucket must have versioning enabled: null or
+missing version IDs fail the job. Keep using the EC2 instance role; do not add
+static AWS credentials. Application `.env` is passed to Docker Compose only,
+never sourced as shell code.
+
+1. Establish the real source migration/cutover evidence and independently
+   confirm the dataset UUID shared with the deletion ledger. Preserve the old
+   working backup installation until these prerequisites are ready.
+2. Create/edit the separate systemd environment file:
+
+   ```sh
+   sudoedit /etc/job-comparer-backup.conf
+   sudo chown root:root /etc/job-comparer-backup.conf
+   sudo chmod 0600 /etc/job-comparer-backup.conf
+   ```
+
+   Its required line is `DELETION_LEDGER_DATASET_ID=YOUR_EXISTING_DATASET_UUID`.
+   The guard uses `/home/ubuntu/job-comparer/.venv/bin/python` by default.
+   If the existing application Python environment is elsewhere, also set
+   `BACKUP_ALEMBIC_PYTHON=/absolute/path/to/its/python` in this file. That
+   interpreter must already have the project's Alembic dependencies installed;
+   no new dependency is introduced. A missing interpreter or unreadable/invalid
+   migration graph stops the backup rather than bypassing the guard.
+
+   Replace the dataset placeholder with the independently established UUID;
+   do not generate a new identity during installation or recovery. No secrets,
+   timestamps, shell commands or application-environment contents belong here.
+3. After confirming no backup is currently running, install from the repository:
+
+   ```sh
+   cd /home/ubuntu/job-comparer
+   sudo systemctl stop job-comparer-backup.timer
+   sudo install -o root -g root -m 0750 operations/backup/job-comparer-backup /usr/local/sbin/job-comparer-backup
+   sudo install -o root -g root -m 0644 operations/backup/job-comparer-backup.service /etc/systemd/system/job-comparer-backup.service
+   sudo install -o root -g root -m 0644 operations/backup/job-comparer-backup.timer /etc/systemd/system/job-comparer-backup.timer
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now job-comparer-backup.timer
+   ```
+
+   The only service-setting addition is the required `EnvironmentFile`. Keep
+   LF line endings as enforced by the operations directory's `.gitattributes`.
+4. In a separately authorised deployment verification, run
+   `sudo systemctl start job-comparer-backup.service` and inspect
+   `sudo journalctl -u job-comparer-backup.service -n 100 --no-pager`.
+   Confirm both artifact verifications and the updated success marker, then
+   perform an isolated restore/reconciliation rehearsal before enabling account
+   deletion. None of those runtime actions have been performed for this change.
+
+### IAM and partial failures
+
+All dump and sidecar objects remain under `production/postgres/` in
+`job-comparer-prod-backups-994821533024-eu-west-1-an`. Existing prefix-scoped
+`s3:PutObject` covers both uploads, including multipart initiation/parts/completion.
+Exact-version downloads require **`s3:GetObjectVersion`**, which is distinct from
+`s3:GetObject`; add it on `arn:aws:s3:::job-comparer-prod-backups-994821533024-eu-west-1-an/production/postgres/*`
+if absent. Multipart failure cleanup also requires **`s3:AbortMultipartUpload`**
+on that same resource. No bucket-wide grants or object-delete permission are
+needed. This change neither modifies IAM nor adds lifecycle rules. Sidecars
+remain within the existing backup retention prefix; the ledger/control prefix
+must stay outside those expiry rules.
+
+If a dump upload succeeds but metadata creation/upload/download/comparison
+fails, the job exits nonzero, reports an **INCOMPLETE** backup, leaves the S3
+dump untouched and does not update `last-success`. Failed verification has the
+same outcome. A lost upload response is reported as uncertain, never resolved
+by guessing the latest version. Completed S3 objects are never deleted for
+compensation. Unfinished multipart uploads are aborted when their ID is known;
+lost creation responses or failed aborts may leave parts requiring operator
+review. Temporary local files are removed on exit, as in the original script.
+
+Do not use an incomplete pair as a recovery-ready backup or manufacture a
+later capture timestamp. A later run creates a new key/pair. `control.json`,
+trusted cutover values, the 31-day/floor checks, the maintenance/startup interlock
+and verified restore provenance remain separate prerequisites.
 
 ## Operator sequence
 

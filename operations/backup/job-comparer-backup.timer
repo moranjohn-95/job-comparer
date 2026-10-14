@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Job Comparer database backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+Unit=job-comparer-backup.service
+
+[Install]
+WantedBy=timers.target

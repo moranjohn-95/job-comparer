@@ -1,0 +1,263 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export AWS_RETRY_MODE=standard
+export AWS_MAX_ATTEMPTS=3
+export AWS_PAGER=""
+
+exec 9>/run/lock/job-comparer-backup.lock
+flock -n 9 || {
+    echo "Another backup is already running." >&2
+    exit 1
+}
+
+project=/home/ubuntu/job-comparer
+state=/var/lib/job-comparer-backup
+bucket=job-comparer-prod-backups-994821533024-eu-west-1-an
+aws=(/snap/bin/aws --region eu-west-1
+    --cli-connect-timeout 10 --cli-read-timeout 60)
+
+# Supplied by systemd EnvironmentFile, never sourced from application .env.
+python3 - <<'PY'
+import os
+import sys
+from uuid import UUID
+
+value = os.getenv("DELETION_LEDGER_DATASET_ID", "")
+try:
+    valid = str(UUID(value)) == value and UUID(value).int != 0
+except ValueError:
+    valid = False
+if not valid:
+    sys.exit("Set an explicit, canonical, nonzero DELETION_LEDGER_DATASET_ID.")
+PY
+
+install -d -m 700 "$state"
+work=$(mktemp -d "$state/run.XXXXXXXX")
+upload_attempted=false
+dump_uploaded=false
+backup_complete=false
+upload_id=""
+uri=""
+key=""
+
+cleanup() {
+    result=$?
+    trap - EXIT
+    if [[ -n "$upload_id" ]]; then
+        # Aborts only unfinished multipart parts, never a completed object.
+        if ! "${aws[@]}" s3api abort-multipart-upload --bucket "$bucket" \
+            --key "$key" --upload-id "$upload_id" >/dev/null 2>&1; then
+            echo "Multipart cleanup unconfirmed; operator review required." >&2
+        fi
+    fi
+    if [[ "$backup_complete" != true && "$upload_attempted" == true ]]; then
+        if [[ "$dump_uploaded" == true ]]; then
+            echo "INCOMPLETE backup: S3 dump retained at $uri." >&2
+        else
+            echo "INCOMPLETE backup: upload outcome uncertain at $uri." >&2
+        fi
+        echo "Dump/metadata verification incomplete; last-success unchanged." >&2
+    fi
+    case "$work" in
+        "$state"/run.*) rm -rf -- "$work" ;;
+    esac
+    exit "$result"
+}
+trap cleanup EXIT
+trap 'echo "Backup failed; check the service logs." >&2' ERR
+trap 'exit 143' TERM
+trap 'exit 130' INT
+
+compose=(
+    /usr/bin/docker compose
+    --project-directory "$project"
+    --env-file "$project/.env"
+    -f "$project/compose.production.yaml"
+)
+
+# Inspect the live schema and recorded revisions without running migrations.
+"${compose[@]}" exec -T db sh -eu -c '
+    if [ "$POSTGRES_DB" != "job_comparer_prod" ]; then
+        echo "Unexpected database; backup stopped." >&2
+        exit 1
+    fi
+    exec psql --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" \
+        --no-password -X -qAt --set=ON_ERROR_STOP=1
+' <<'SQL' > "$work/uuid-state"
+SELECT EXISTS (
+        SELECT 1 FROM pg_attribute a
+        JOIN pg_constraint c ON c.conrelid = a.attrelid
+        WHERE a.attrelid = 'public.users'::regclass
+          AND a.attname = 'account_uuid' AND NOT a.attisdropped
+          AND a.atttypid = 'uuid'::regtype AND a.attnotnull
+          AND c.contype = 'u' AND c.convalidated
+          AND c.conkey = ARRAY[a.attnum]
+    );
+SELECT version_num FROM public.alembic_version ORDER BY version_num;
+SQL
+
+# Use the application's existing Alembic installation and revision graph.
+# Config/ScriptDirectory do not execute env.py or connect to a database.
+"${BACKUP_ALEMBIC_PYTHON:-$project/.venv/bin/python}" - \
+    "$project" "$work/uuid-state" <<'PY'
+import pathlib
+import sys
+
+try:
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+except ImportError:
+    sys.exit("Alembic unavailable; configure BACKUP_ALEMBIC_PYTHON.")
+
+try:
+    project = pathlib.Path(sys.argv[1])
+    state = pathlib.Path(sys.argv[2]).read_text().splitlines()
+    if not state or state[0] != "t" or len(state) < 2:
+        raise ValueError
+    heads = state[1:]
+    if len(set(heads)) != len(heads):
+        raise ValueError
+    scripts = ScriptDirectory.from_config(Config(str(project / "alembic.ini")))
+    for head in heads:
+        revision = scripts.get_revision(head)
+        # Require exact known IDs, not Alembic aliases or partial matches.
+        if revision is None or revision.revision != head:
+            raise ValueError
+        if not any(revision.revision == "0010_account_uuid"
+                   for revision in scripts.walk_revisions(
+                       base="base", head=head,
+                   )):
+            raise ValueError
+except Exception:
+    sys.exit("UUID schema or migration ancestry not confirmed; backup stopped.")
+PY
+
+# Keep the capture-start timestamp independent of upload/copy times.
+captured_at=$(date -u +%Y-%m-%dT%H:%M:%S.%6NZ)
+stamp=$(date -u +%Y%m%dT%H%M%S%NZ)
+key="production/postgres/$stamp.dump"
+uri="s3://$bucket/$key"
+echo "Creating PostgreSQL backup..."
+"${compose[@]}" exec -T db sh -eu -c '
+    if [ "$POSTGRES_DB" != "job_comparer_prod" ]; then
+        echo "Unexpected database; backup stopped." >&2
+        exit 1
+    fi
+    exec pg_dump \
+        --username="$POSTGRES_USER" \
+        --dbname="$POSTGRES_DB" \
+        --format=custom \
+        --lock-wait-timeout=30s \
+        --no-password
+' > "$work/database.dump"
+
+test -s "$work/database.dump"
+"${compose[@]}" exec -T db \
+    pg_restore --list < "$work/database.dump" > /dev/null
+
+# Parse IDs from operation responses, never HEAD or latest-version lookup.
+read_id() {
+    python3 -c '
+import json, sys
+value = json.load(sys.stdin)
+if (not isinstance(value, str) or not value or value == "null"
+        or any(ord(c) < 32 for c in value)):
+    sys.exit("Upload did not return a usable ID; backup incomplete.")
+print(value)
+'
+}
+
+echo "Uploading backup..."
+upload_attempted=true
+dump_size=$(stat -c %s "$work/database.dump")
+if (( dump_size <= 5 * 1024 * 1024 * 1024 )); then
+    "${aws[@]}" s3api put-object --bucket "$bucket" --key "$key" \
+        --body "$work/database.dump" --server-side-encryption AES256 \
+        --if-none-match '*' --query VersionId --output json \
+        > "$work/dump-version.json"
+else
+    # Retain large-file support previously provided by `aws s3 cp`.
+    "${aws[@]}" s3api create-multipart-upload --bucket "$bucket" --key "$key" \
+        --server-side-encryption AES256 --checksum-algorithm SHA256 \
+        --query UploadId --output json > "$work/upload-id.json"
+    upload_id=$(read_id < "$work/upload-id.json")
+    # Choose whole-MiB parts, at least 64 MiB, with at most 10,000 parts.
+    part_mib=$(( (dump_size + 10000 * 1048576 - 1) / (10000 * 1048576) ))
+    (( part_mib >= 64 )) || part_mib=64
+    if (( part_mib > 5120 )); then
+        echo "Dump exceeds supported multipart size; backup incomplete." >&2
+        exit 1
+    fi
+    part_count=$(( (dump_size + part_mib * 1048576 - 1) / (part_mib * 1048576) ))
+    for ((part=1; part<=part_count; part++)); do
+        dd if="$work/database.dump" of="$work/part" bs="${part_mib}M" \
+            skip=$((part - 1)) count=1 status=none
+        "${aws[@]}" s3api upload-part --bucket "$bucket" --key "$key" \
+            --upload-id "$upload_id" --part-number "$part" \
+            --body "$work/part" --checksum-algorithm SHA256 \
+            --query '{ETag:ETag,ChecksumSHA256:ChecksumSHA256}' --output json \
+            > "$work/part-$part.json"
+    done
+    python3 - "$work" "$part_count" <<'PY' > "$work/parts.json"
+import json
+import pathlib
+import sys
+
+work = pathlib.Path(sys.argv[1])
+parts = []
+for number in range(1, int(sys.argv[2]) + 1):
+    part = json.loads((work / f"part-{number}.json").read_text())
+    if not all(isinstance(part.get(k), str) and part[k]
+               for k in ("ETag", "ChecksumSHA256")):
+        sys.exit("Invalid multipart response; backup incomplete.")
+    parts.append({"PartNumber": number, **part})
+json.dump({"Parts": parts}, sys.stdout)
+PY
+    "${aws[@]}" s3api complete-multipart-upload --bucket "$bucket" --key "$key" \
+        --upload-id "$upload_id" --multipart-upload "file://$work/parts.json" \
+        --if-none-match '*' --query VersionId --output json \
+        > "$work/dump-version.json"
+    upload_id=""
+fi
+dump_version=$(read_id < "$work/dump-version.json")
+dump_uploaded=true
+
+echo "Verifying uploaded dump version..."
+"${aws[@]}" s3api get-object --bucket "$bucket" --key "$key" \
+    --version-id "$dump_version" "$work/downloaded.dump" >/dev/null
+cmp --silent "$work/database.dump" "$work/downloaded.dump"
+
+python3 - "$captured_at" "$key" "$dump_version" <<'PY' > "$work/metadata.json"
+import json
+import os
+import sys
+
+json.dump({
+    "schema_version": 1,
+    "dataset_id": os.environ["DELETION_LEDGER_DATASET_ID"],
+    "captured_at": sys.argv[1],
+    "backup_key": sys.argv[2],
+    "backup_version_id": sys.argv[3],
+    "account_uuid_revision": "0010_account_uuid",
+}, sys.stdout)
+sys.stdout.write("\n")
+PY
+test "$(stat -c %s "$work/metadata.json")" -le 2048
+
+echo "Uploading and verifying backup metadata..."
+"${aws[@]}" s3api put-object --bucket "$bucket" --key "$key.metadata.json" \
+    --body "$work/metadata.json" --content-type application/json \
+    --server-side-encryption AES256 --if-none-match '*' \
+    --query VersionId --output json > "$work/metadata-version.json"
+metadata_version=$(read_id < "$work/metadata-version.json")
+"${aws[@]}" s3api get-object --bucket "$bucket" --key "$key.metadata.json" \
+    --version-id "$metadata_version" "$work/downloaded.metadata.json" >/dev/null
+cmp --silent "$work/metadata.json" "$work/downloaded.metadata.json"
+
+printf '%s\n' "$uri" > "$work/last-success"
+mv "$work/last-success" "$state/last-success"
+backup_complete=true
+echo "Backup dump and metadata uploaded and verified: $uri"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Job Comparer PostgreSQL backup to S3
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=/etc/job-comparer-backup.conf
+ExecStart=/usr/local/sbin/job-comparer-backup
+TimeoutStartSec=15min
+UMask=0077
+Nice=10
