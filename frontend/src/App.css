@@ -79,13 +79,16 @@
 .public-info-page .login-card h1 {
   text-align: center;
 }
-.privacy-page .auth-layout {
+.privacy-page .auth-layout,
+.terms-page .auth-layout {
   width: min(100%, 840px);
 }
-.privacy-page .login-card {
+.privacy-page .login-card,
+.terms-page .login-card {
   padding: clamp(20px, 4vw, 40px);
 }
-.privacy-policy {
+.privacy-policy,
+.terms-of-use {
   max-width: 76ch;
   margin-inline: auto;
   color: var(--color-text);
@@ -94,38 +97,47 @@
   overflow-wrap: anywhere;
   text-align: left;
 }
-.privacy-policy p {
+.privacy-policy p,
+.terms-of-use p {
   margin: var(--space-3) 0 0;
 }
-.privacy-policy .privacy-policy__intro {
+.privacy-policy .privacy-policy__intro,
+.terms-of-use .terms-of-use__intro {
   margin-top: var(--space-4);
   color: var(--color-text-muted);
 }
-.privacy-policy section {
+.privacy-policy section,
+.terms-of-use section {
   margin-top: var(--space-6);
 }
-.privacy-policy h2 {
+.privacy-policy h2,
+.terms-of-use h2 {
   margin: 0;
   font-size: 1.25rem;
   line-height: 1.4;
   letter-spacing: -0.02em;
 }
-.privacy-policy ul {
+.privacy-policy ul,
+.terms-of-use ul {
   margin: var(--space-3) 0 0;
   padding-left: 1.3em;
 }
-.privacy-policy li + li {
+.privacy-policy li + li,
+.terms-of-use li + li {
   margin-top: var(--space-3);
 }
-.privacy-policy a {
+.privacy-policy a,
+.terms-of-use a {
   color: var(--color-accent-deep);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.privacy-policy a:hover {
+.privacy-policy a:hover,
+.terms-of-use a:hover {
   text-decoration-thickness: 2px;
 }
-.privacy-policy a:focus-visible {
+.privacy-policy a:focus-visible,
+.terms-of-use a:focus-visible {
   outline: 3px solid var(--color-focus);
   outline-offset: 3px;
 }

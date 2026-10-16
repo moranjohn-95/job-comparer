@@ -85,7 +85,47 @@ test("opens the privacy policy directly and returns home without changing data",
   expect(footer.getByRole("link", { name: "Privacy" })).not.toHaveAttribute("aria-current");
 });
 
-test("preserves the session and unsaved drafts through privacy navigation and browser Back", async () => {
+test("opens the terms directly and returns home without changing data", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method ?? "GET").toBe("GET");
+    return Promise.resolve(savedDraftResponse(String(input)));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/terms");
+  await renderSignedOutApp();
+
+  expect(screen.getByRole("heading", { level: 1, name: "Terms of Use" })).toBeVisible();
+  const terms = within(screen.getByRole("article", { name: "Terms of use" }));
+  for (const name of ["What Job Comparer provides", "AI guidance, not a guarantee",
+    "Your information and account", "Acceptable use", "Availability and changes",
+    "Responsibility", "Privacy"]) {
+    expect(terms.getByRole("heading", { level: 2, name })).toBeVisible();
+  }
+  expect(terms.getByText(/Results do not guarantee an interview, employment or suitability/)).toBeVisible();
+  expect(terms.getByText(/Nothing in these terms excludes or limits/)).toBeVisible();
+  const privacyLink = terms.getByRole("link", { name: "Privacy Policy" });
+  expect(privacyLink).toHaveAttribute("href", "/privacy");
+  fireEvent.click(privacyLink);
+  expect(screen.getByRole("heading", { level: 1, name: "Privacy Policy" })).toBeVisible();
+  expect(window.location.pathname).toBe("/privacy");
+  window.history.back();
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Terms of Use" })).toBeVisible());
+  const footer = within(screen.getByRole("navigation", { name: "Footer" }));
+  expect(footer.getByRole("link", { name: "Terms" })).toHaveAttribute("aria-current", "page");
+  const returnLink = screen.getByRole("link", { name: "Back to home" });
+  expect(returnLink).toHaveAttribute("href", "/");
+  fireEvent.click(returnLink);
+
+  expect(window.location.pathname).toBe("/");
+  expect(screen.queryByRole("heading", { name: "Terms of Use" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Job description")).toBeVisible();
+  expect(footer.getByRole("link", { name: "Terms" })).not.toHaveAttribute("aria-current");
+});
+
+test.each([
+  ["Privacy", "Privacy Policy"],
+  ["Terms", "Terms of Use"],
+])("preserves the session and unsaved drafts through %s navigation and browser Back", async (link, heading) => {
   const { writes, fetchMock } = mockEmptyDashboard();
   render(<App />);
   const title = await screen.findByLabelText("Job title");
@@ -94,13 +134,13 @@ test("preserves the session and unsaved drafts through privacy navigation and br
   fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
   fireEvent.change(screen.getByLabelText("Paste your CV text"), { target: { value: "Unsubmitted CV" } });
 
-  fireEvent.click(screen.getByRole("link", { name: "Privacy" }));
-  expect(screen.getByRole("heading", { name: "Privacy Policy" })).toBeVisible();
+  fireEvent.click(screen.getByRole("link", { name: link }));
+  expect(screen.getByRole("heading", { name: heading })).toBeVisible();
   expect(screen.getByRole("link", { name: "Back to dashboard" })).toHaveAttribute("href", "/");
   window.history.back();
   await waitFor(() => expect(screen.getByRole("heading", { name: "Start a comparison" })).toBeVisible());
 
-  fireEvent.click(screen.getByRole("link", { name: "Privacy" }));
+  fireEvent.click(screen.getByRole("link", { name: link }));
   fireEvent.click(screen.getByRole("link", { name: "Back to dashboard" }));
   expect(screen.getByText("ada@example.com")).toBeVisible();
   expect(screen.getByLabelText("Job title")).toHaveValue("Unsubmitted role");

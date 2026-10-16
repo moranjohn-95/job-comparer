@@ -46,6 +46,7 @@ import {
 } from "./api";
 import { formatCvPreview } from "./formatCvPreview";
 import { PrivacyPolicy } from "./PrivacyPolicy";
+import { TermsOfUse } from "./TermsOfUse";
 import "./App.css";
 
 type ConnectionStatus = "checking" | "connected" | "unavailable";
@@ -264,12 +265,14 @@ function PageFrame({ publicPage, signedIn, onNavigate, onReturn, children }: {
   return <div className="page-frame">
     <div className="page-content" hidden={publicPage !== null}>{children}</div>
     {publicPage && <AuthLayout headingId="public-page-heading" onBack={onReturn}
-      className={`login-page public-info-page${publicPage === "privacy" ? " privacy-page" : ""}`}
+      className={`login-page public-info-page ${publicPage}-page`}
       backLabel={signedIn ? "Back to dashboard" : "Back to home"}>
       <h1 id="public-page-heading" tabIndex={-1}>
-        {publicPage === "privacy" ? "Privacy Policy" : publicPageTitles[publicPage]}
+        {publicPage === "privacy" ? "Privacy Policy"
+          : publicPage === "terms" ? "Terms of Use" : publicPageTitles[publicPage]}
       </h1>
       {publicPage === "privacy" && <PrivacyPolicy />}
+      {publicPage === "terms" && <TermsOfUse onOpenPrivacy={() => onNavigate("privacy")} />}
     </AuthLayout>}
     <SiteFooter currentPage={publicPage} onNavigate={onNavigate} />
   </div>;
