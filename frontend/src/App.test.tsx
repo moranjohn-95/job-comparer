@@ -59,12 +59,17 @@ test("opens the privacy policy directly and returns home without changing data",
   await renderSignedOutApp();
 
   expect(screen.getByRole("heading", { level: 1, name: "Privacy Policy" })).toBeVisible();
-  expect(screen.getByText("Draft for owner review")).toBeVisible();
-  expect(screen.getByText(/operated by John Moran, an individual based in Ireland/)).toBeVisible();
-  expect(screen.getByRole("link", { name: "privacy@jobcomparer.com" }))
+  expect(screen.queryByText("Draft for owner review")).not.toBeInTheDocument();
+  const policy = screen.getByRole("article", { name: "Privacy notice" });
+  const contact = within(policy).getByRole("region", { name: "Contact and data controller" });
+  expect(within(contact).getByText("Job Comparer is operated by John Moran, based in Ireland.")).toBeVisible();
+  expect(policy.textContent?.match(/John Moran/g)).toHaveLength(1);
+  expect(within(policy).getAllByRole("heading", { level: 2 }).at(-1))
+    .toHaveTextContent("Contact and data controller");
+  expect(within(contact).getByRole("link", { name: "privacy@jobcomparer.com" }))
     .toHaveAttribute("href", "mailto:privacy@jobcomparer.com");
   for (const name of ["Information we handle", "AI comparisons", "Retention and deletion",
-    "Your rights", "Controller and contact"]) {
+    "Your rights", "Contact and data controller"]) {
     expect(screen.getByRole("heading", { level: 2, name })).toBeVisible();
   }
   expect(screen.getByText(/saved CV text and the selected job description are sent to OpenAI/)).toBeVisible();

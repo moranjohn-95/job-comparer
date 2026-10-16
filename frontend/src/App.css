@@ -101,17 +101,6 @@
   margin-top: var(--space-4);
   color: var(--color-text-muted);
 }
-.privacy-policy__draft {
-  margin-top: var(--space-5);
-  padding: var(--space-4);
-  border-left: 3px solid var(--color-accent);
-  border-radius: 4px;
-  background: var(--color-accent-soft);
-  font-size: var(--text-sm);
-}
-.privacy-policy__draft p {
-  margin-top: var(--space-1);
-}
 .privacy-policy section {
   margin-top: var(--space-6);
 }

@@ -1,5 +1,5 @@
-// Publication requires owner confirmation of the visibly flagged facts below.
-// Keep operational evidence and the private readiness report out of this page.
+// Publication remains blocked on the open decisions in the private readiness
+// report. Presentation changes do not verify legal bases or provider settings.
 export function PrivacyPolicy() {
   return <article className="privacy-policy" aria-label="Privacy notice">
     <p className="privacy-policy__intro">
@@ -7,28 +7,6 @@ export function PrivacyPolicy() {
       the results in your account. This notice explains what happens to your
       information when you use the service.
     </p>
-
-    <aside className="privacy-policy__draft" aria-label="Policy review status">
-      <strong>Draft for owner review</strong>
-      <p>
-        This notice is being finalised. The lawful bases and outstanding
-        provider and retention details still need confirmation before publication.
-      </p>
-    </aside>
-
-    <section aria-labelledby="privacy-controller">
-      <h2 id="privacy-controller">Controller and contact</h2>
-      <p>
-        Job Comparer is a personal portfolio project operated by John Moran,
-        an individual based in Ireland. It is not operated through a registered
-        company. John Moran is responsible for how your personal information
-        is used (the data controller).
-      </p>
-      <p>
-        For privacy questions or requests about your personal data, email{' '}
-        <a href="mailto:privacy@jobcomparer.com">privacy@jobcomparer.com</a>.
-      </p>
-    </section>
 
     <section aria-labelledby="privacy-information">
       <h2 id="privacy-information">Information we handle</h2>
@@ -66,25 +44,21 @@ export function PrivacyPolicy() {
     <section aria-labelledby="privacy-purposes">
       <h2 id="privacy-purposes">Why your information is used</h2>
       <p>
-        Information is used for the purposes below. The proposed GDPR lawful
-        bases still need to be confirmed before this notice is finalised.
+        Your information is used for the following purposes:
       </p>
       <ul>
         <li><strong>Providing the service you request:</strong> verifying your
           email, signing you in, saving your information and comparing your CV
-          with a job. Proposed basis: processing necessary to provide the
-          agreed service (performance of a contract).</li>
+          with a job.</li>
         <li><strong>Protecting the service:</strong> preventing unauthorised
           access, limiting abuse and usage, and keeping deletion records for
-          backup recovery. Proposed basis: legitimate interests in protecting
-          accounts and keeping the service available, balanced against your rights.</li>
+          backup recovery.</li>
         <li><strong>Handling privacy requests:</strong> responding to requests
-          about your data. Proposed basis: complying with applicable
-          data-protection obligations.</li>
+          about your data and the exercise of your rights.</li>
       </ul>
       <p>
         Sensitive information, such as health details, needs additional legal
-        protection. These proposed bases alone do not authorise its processing.
+        protection. Please do not include it in your CV or job descriptions.
       </p>
     </section>
 
@@ -106,7 +80,7 @@ export function PrivacyPolicy() {
         zero provider retention. OpenAI’s published API policy says data is not
         used for model training by default unless the customer opts in, but
         security and abuse-monitoring records may still retain content.
-        Job Comparer’s provider settings need confirmation. See{' '}
+        See{' '}
         <a href="https://developers.openai.com/api/docs/guides/your-data">
           OpenAI’s API data controls
         </a> for the provider’s explanation.
@@ -123,10 +97,8 @@ export function PrivacyPolicy() {
         those emails do not contain your CV or job descriptions.
       </p>
       <p>
-        The email provider, processing locations and provider agreements still
-        need confirmation. If providers process information outside the European
-        Economic Area, the relevant countries and legal safeguards must be
-        explained in the final notice. No EU-only processing guarantee is made.
+        Processing by service providers may take place outside the European
+        Economic Area. Job Comparer does not guarantee EU-only processing.
       </p>
       <p>
         Password hashing, session checks and account-level access controls help
@@ -161,14 +133,13 @@ export function PrivacyPolicy() {
           deletion record keeps an account identifier and timestamps for backup
           recovery, not your email or CV. These records are not anonymous.
           Old sign-in, verification, usage and deletion records have no automated
-          cleanup schedule yet; retention limits still need to be set.</li>
+          cleanup schedule.</li>
       </ul>
       <p>
         Daily database backups are kept separately. The configured expiry is
         30 days for current backup copies and one day after a version becomes
         noncurrent. Removal is not immediate when those periods end, so this
-        is not a guaranteed 31-day erasure deadline. The deployed settings and
-        log-retention periods still need confirmation.
+        is not a guaranteed 31-day erasure deadline.
       </p>
       <p>
         Deletion from the live database does not immediately erase backups or
@@ -185,15 +156,14 @@ export function PrivacyPolicy() {
       <p>
         An essential session cookie keeps you signed in. It contains a random
         token, not your CV or password. It expires according to the server’s
-        session setting: one hour by default, with the live value still to be
-        confirmed. Logging out ends that session and clears the cookie. Blocking
+        session setting. The application’s default lifetime is one hour.
+        Logging out ends that session and clears the cookie. Blocking
         it prevents signed-in features from working.
       </p>
       <p>
         Unsaved text and selected files stay in the open app’s memory while you
         navigate, but are not preserved after a fresh page load. The application
-        includes no advertising or analytics cookies; any additions on the live
-        website still need checking.
+        does not set advertising or analytics cookies.
       </p>
     </section>
 
@@ -208,7 +178,7 @@ export function PrivacyPolicy() {
       </p>
       <p>
         You do not have to use the in-app deletion controls to exercise your
-        rights, including if you cannot sign in. Use the privacy email above.
+        rights, including if you cannot sign in. Use the privacy email below.
         Reasonable identity checks may be needed; never send your password.
         The app does not currently offer a self-service account export.
       </p>
@@ -226,6 +196,16 @@ export function PrivacyPolicy() {
         <a href="https://www.dataprotection.ie/en/individuals/exercising-your-rights/raising-concern-commission">
           raise a concern with the Data Protection Commission
         </a>. This does not depend on using the account-deletion feature.
+      </p>
+    </section>
+    <section aria-labelledby="privacy-controller">
+      <h2 id="privacy-controller">Contact and data controller</h2>
+      <p>Job Comparer is operated by John Moran, based in Ireland.</p>
+      <p>
+        The operator is the data controller, responsible for how your personal
+        information is used. For privacy questions or requests about your data,
+        email{' '}
+        <a href="mailto:privacy@jobcomparer.com">privacy@jobcomparer.com</a>.
       </p>
     </section>
   </article>;
