@@ -49,15 +49,22 @@ afterEach(() => {
 
 let mockedDialog = false;
 
-test("opens the privacy policy directly and returns home without changing data", async () => {
+test.each(["/privacy", "/contact/"])("opens %s as privacy and returns home without changing data", async (path) => {
   const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     expect(init?.method ?? "GET").toBe("GET");
     return Promise.resolve(savedDraftResponse(String(input)));
   });
   vi.stubGlobal("fetch", fetchMock);
-  window.history.replaceState(null, "", "/privacy");
+  const state = { jobComparerView: "home" };
+  window.history.replaceState(state, "", `${path}?source=footer#privacy-controller`);
+  const historyLength = window.history.length;
   await renderSignedOutApp();
 
+  expect(window.location.pathname).toBe("/privacy");
+  expect(window.location.search).toBe("?source=footer");
+  expect(window.location.hash).toBe("#privacy-controller");
+  expect(window.history.length).toBe(historyLength);
+  expect(window.history.state).toEqual(state);
   expect(screen.getByRole("heading", { level: 1, name: "Privacy Policy" })).toBeVisible();
   expect(screen.queryByText("Draft for owner review")).not.toBeInTheDocument();
   const policy = screen.getByRole("article", { name: "Privacy notice" });
@@ -74,6 +81,7 @@ test("opens the privacy policy directly and returns home without changing data",
   expect(screen.getByText(/saved CV text and the selected job description are sent to OpenAI/)).toBeVisible();
   expect(screen.getByText(/Replacing or deleting it does not remove excerpts from earlier comparisons/)).toBeVisible();
   const footer = within(screen.getByRole("navigation", { name: "Footer" }));
+  expect(footer.getAllByRole("link").map((link) => link.textContent)).toEqual(["Privacy", "Terms"]);
   expect(footer.getByRole("link", { name: "Privacy" })).toHaveAttribute("aria-current", "page");
   const returnLink = screen.getByRole("link", { name: "Back to home" });
   expect(returnLink).toHaveAttribute("href", "/");
@@ -137,6 +145,14 @@ test.each([
   fireEvent.click(screen.getByRole("link", { name: link }));
   expect(screen.getByRole("heading", { name: heading })).toBeVisible();
   expect(screen.getByRole("link", { name: "Back to dashboard" })).toHaveAttribute("href", "/");
+  if (link === "Privacy") {
+    // Model a legacy history entry while Privacy is already selected.
+    const state = window.history.state;
+    window.history.replaceState(state, "", "/contact");
+    window.dispatchEvent(new PopStateEvent("popstate", { state }));
+    expect(window.location.pathname).toBe("/privacy");
+    expect(window.history.state).toEqual(state);
+  }
   window.history.back();
   await waitFor(() => expect(screen.getByRole("heading", { name: "Start a comparison" })).toBeVisible());
 

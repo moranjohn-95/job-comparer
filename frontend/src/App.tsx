@@ -53,13 +53,14 @@ type ConnectionStatus = "checking" | "connected" | "unavailable";
 const appViews = ["home", "dashboard", "jobs", "add-job", "comparisons", "my-cv",
   "dashboard-comparison", "account-settings", "login", "signup", "check-email", "verify-email"] as const;
 type View = typeof appViews[number];
-const publicPageTitles = { privacy: "Privacy", terms: "Terms", contact: "Contact" } as const;
+const publicPageTitles = { privacy: "Privacy", terms: "Terms" } as const;
 type PublicPage = keyof typeof publicPageTitles;
 
 function currentPublicPage(): PublicPage | null {
   const base = import.meta.env.BASE_URL;
   if (!window.location.pathname.startsWith(base)) return null;
   const page = window.location.pathname.slice(base.length).replace(/\/$/, "");
+  if (page === "contact") return "privacy";
   return Object.hasOwn(publicPageTitles, page) ? page as PublicPage : null;
 }
 type CvInputMethod = "file" | "text" | null;
@@ -268,8 +269,7 @@ function PageFrame({ publicPage, signedIn, onNavigate, onReturn, children }: {
       className={`login-page public-info-page ${publicPage}-page`}
       backLabel={signedIn ? "Back to dashboard" : "Back to home"}>
       <h1 id="public-page-heading" tabIndex={-1}>
-        {publicPage === "privacy" ? "Privacy Policy"
-          : publicPage === "terms" ? "Terms of Use" : publicPageTitles[publicPage]}
+        {publicPage === "privacy" ? "Privacy Policy" : "Terms of Use"}
       </h1>
       {publicPage === "privacy" && <PrivacyPolicy />}
       {publicPage === "terms" && <TermsOfUse onOpenPrivacy={() => onNavigate("privacy")} />}
@@ -2977,7 +2977,15 @@ function App() {
   }, []);
 
   useEffect(() => {
+    function redirectLegacyContact() {
+      const { pathname, search, hash } = window.location;
+      if (pathname.replace(/\/$/, "") !== `${import.meta.env.BASE_URL}contact`) return;
+      window.history.replaceState(window.history.state, "",
+        `${import.meta.env.BASE_URL}privacy${search}${hash}`);
+    }
+    redirectLegacyContact();
     function restorePublicNavigation(event: PopStateEvent) {
+      redirectLegacyContact();
       setPublicPage(currentPublicPage());
       const previousView: unknown = event.state?.jobComparerView;
       if (typeof previousView === "string" && appViews.includes(previousView as View)) {
