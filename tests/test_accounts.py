@@ -29,6 +29,10 @@ from auth_rate_limit import (
     login_email_scope,
 )
 from database import get_engine
+from deletion_ledger import (
+    LedgerConfigurationError, LedgerOutcomeUnknown, LedgerRecordError,
+    LedgerWriteFailed,
+)
 from main import app, client_ip
 import main
 import auth_rate_limit
@@ -811,8 +815,44 @@ def test_signup_validates_inputs(
     assert response.status_code == 422
 
 
+class FakeAccountDeletionLedger:
+    """Record endpoint calls without constructing an AWS client."""
+
+    def __init__(self):
+        self.calls = []
+        self.init_error = None
+        self.intent_error = None
+        self.completion_error = None
+        self.on_completion = None
+
+    def __call__(self):
+        self.calls.append(("create",))
+        if self.init_error is not None:
+            raise self.init_error
+        return self
+
+    def record_intent(self, account_uuid):
+        self.calls.append(("intent", account_uuid))
+        if self.intent_error is not None:
+            raise self.intent_error
+
+    def record_completion(self, account_uuid, confirmed_at):
+        self.calls.append(("completion", account_uuid, confirmed_at))
+        if self.on_completion is not None:
+            self.on_completion(account_uuid, confirmed_at)
+        if self.completion_error is not None:
+            raise self.completion_error
+
+
 @pytest.fixture
-def account_deletion_data(client, email):
+def account_deletion_ledger(monkeypatch):
+    ledger = FakeAccountDeletionLedger()
+    monkeypatch.setattr(main, "AccountDeletionLedger", ledger)
+    return ledger
+
+
+@pytest.fixture
+def account_deletion_data(client, email, account_deletion_ledger):
     signup(client, email)
     login = client.post("/login", json={
         "email": email, "password": PASSWORD,
@@ -867,12 +907,15 @@ def account_deletion_data(client, email):
             db.commit()
 
 
+@pytest.mark.parametrize("completion_fails", [False, True])
 def test_account_deletion_cascades_and_preserves_other_account(
-    client, account_deletion_data,
+    client, account_deletion_data, account_deletion_ledger, completion_fails,
+    caplog,
 ):
     owner_id, other_id, cookies, keys = account_deletion_data
     original_cookie = client.cookies["job_comparer_session"]
     with Session(get_engine()) as db:
+        account_uuid = db.get(User, owner_id).account_uuid
         limits_before = set(db.scalars(
             select(AuthRateLimitCounter.counter_key)
         ))
@@ -882,6 +925,23 @@ def test_account_deletion_cascades_and_preserves_other_account(
         ).where(
             ~AuthRateLimitCounter.counter_key.startswith("login:")
         )).all())
+
+    completion_observations = []
+
+    def check_committed_account(deleted_uuid, confirmed_at):
+        # An independent connection must observe the committed deletion
+        # before the endpoint attempts to write a completion record.
+        with Session(get_engine()) as db:
+            completion_observations.append((
+                deleted_uuid, confirmed_at.utcoffset(),
+                db.get(User, owner_id) is None,
+            ))
+
+    account_deletion_ledger.on_completion = check_committed_account
+    if completion_fails:
+        account_deletion_ledger.completion_error = RuntimeError(
+            f"Private provider response containing {PASSWORD}"
+        )
     # Keep a stale authenticated User in a separate identity map, modelling
     # a comparison request that has not yet reserved its provider attempt.
     with Session(get_engine()) as stale:
@@ -895,6 +955,23 @@ def test_account_deletion_cascades_and_preserves_other_account(
         assert "HttpOnly" in response.headers["set-cookie"]
         with pytest.raises(UsageAccountMissing):
             reserve_attempt(stale, owner_id)
+    assert account_deletion_ledger.calls[:2] == [
+        ("create",), ("intent", account_uuid),
+    ]
+    assert len(account_deletion_ledger.calls) == 3
+    assert account_deletion_ledger.calls[2][:2] == (
+        "completion", account_uuid,
+    )
+    # Assert outside the mock: the endpoint deliberately catches any
+    # completion exception, which must not swallow a test assertion.
+    assert completion_observations == [(account_uuid, timedelta(0), True)]
+    assert PASSWORD not in response.text
+    assert PASSWORD not in caplog.text
+    assert "Private provider response" not in caplog.text
+    assert "Private test CV" not in caplog.text
+    assert original_cookie not in caplog.text
+    warning = "Account deletion committed; ledger completion needs"
+    assert (warning in caplog.text) == completion_fails
     for token in (original_cookie, cookies[owner_id]):
         assert client.get("/me", headers={
             "Cookie": f"job_comparer_session={token}",
@@ -936,7 +1013,7 @@ def test_account_deletion_cascades_and_preserves_other_account(
 
 
 def test_account_deletion_rejects_wrong_password_and_invalid_requests(
-    client, account_deletion_data,
+    client, account_deletion_data, account_deletion_ledger,
 ):
     owner_id, _, _, _ = account_deletion_data
     for headers, payload, expected in (
@@ -957,10 +1034,11 @@ def test_account_deletion_rejects_wrong_password_and_invalid_requests(
         assert client.get("/me").json()["id"] == owner_id
         assert client.get("/cv").json()["text"] == "Private test CV"
         assert len(client.get("/jobs").json()) == 1
+        assert account_deletion_ledger.calls == []
 
 
 def test_account_deletion_password_attempts_share_persistent_login_limits(
-    client, account_deletion_data,
+    client, account_deletion_data, account_deletion_ledger,
 ):
     owner_id, _, cookies, _ = account_deletion_data
     # The fixture's login already consumed one password attempt.
@@ -976,13 +1054,65 @@ def test_account_deletion_password_attempts_share_persistent_login_limits(
     assert "set-cookie" not in response.headers
     assert client.get("/me").json()["id"] == owner_id
     assert client.get("/cv").status_code == 200
+    assert account_deletion_ledger.calls == []
+
+
+@pytest.mark.parametrize("failure_stage,error_type,code", [
+    ("init_error", LedgerConfigurationError, "deletion_unavailable"),
+    ("intent_error", LedgerWriteFailed, "deletion_unavailable"),
+    ("intent_error", LedgerOutcomeUnknown, "deletion_unconfirmed"),
+    ("intent_error", LedgerRecordError, "deletion_unconfirmed"),
+])
+def test_account_deletion_ledger_failure_preserves_data_and_session(
+    client, account_deletion_data, account_deletion_ledger, failure_stage,
+    error_type, code, caplog,
+):
+    owner_id, _, _, keys = account_deletion_data
+    private_error = f"Private provider response containing {PASSWORD}"
+    setattr(account_deletion_ledger, failure_stage, error_type(private_error))
+    with Session(get_engine()) as db:
+        account_uuid = db.get(User, owner_id).account_uuid
+        before = {
+            model: db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == owner_id
+            )) for model in (SavedCV, SavedJob, ComparisonHistory,
+                             AuthSession, VerificationToken)
+        }
+    response = client.request("DELETE", "/account", json={
+        "password": PASSWORD,
+    })
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == code
+    assert "set-cookie" not in response.headers
+    assert response.headers["cache-control"] == "no-store"
+    assert PASSWORD not in response.text
+    assert private_error not in caplog.text
+    assert client.get("/me").json()["id"] == owner_id
+    expected_calls = [("create",)]
+    if failure_stage == "intent_error":
+        expected_calls.append(("intent", account_uuid))
+    assert account_deletion_ledger.calls == expected_calls
+    with Session(get_engine()) as db:
+        for model, count in before.items():
+            assert db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == owner_id
+            )) == count
+        assert db.get(AIUsageCounter, keys[0]).call_count == 2
 
 
 def test_account_deletion_commit_failure_rolls_back_without_clearing_cookie(
-    client, account_deletion_data, monkeypatch,
+    client, account_deletion_data, account_deletion_ledger, monkeypatch,
 ):
     owner_id, _, cookies, keys = account_deletion_data
     original_lock = main.lock_usage
+    with Session(get_engine()) as db:
+        account_uuid = db.get(User, owner_id).account_uuid
+        before = {
+            model: db.scalar(select(func.count()).select_from(model).where(
+                model.user_id == owner_id
+            )) for model in (SavedCV, SavedJob, ComparisonHistory,
+                             AuthSession, VerificationToken)
+        }
 
     def fail_commit():
         raise SQLAlchemyError("Simulated test commit failure")
@@ -996,14 +1126,22 @@ def test_account_deletion_commit_failure_rolls_back_without_clearing_cookie(
         response = browser.request("DELETE", "/account", json={
             "password": PASSWORD,
         }, headers={"Cookie": f"job_comparer_session={cookies[owner_id]}"})
-    assert response.status_code == 500
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert detail["code"] == "deletion_pending"
+    assert "cannot be cancelled" in detail["message"]
+    assert "Database deletion has not been confirmed" in detail["message"]
     assert "set-cookie" not in response.headers
+    assert response.headers["cache-control"] == "no-store"
     assert PASSWORD not in response.text
+    assert "Simulated test commit failure" not in response.text
+    assert account_deletion_ledger.calls == [
+        ("create",), ("intent", account_uuid),
+    ]
     assert client.get("/me").json()["id"] == owner_id
     with Session(get_engine()) as db:
-        for model in (SavedCV, SavedJob, ComparisonHistory,
-                      AuthSession, VerificationToken):
+        for model, count in before.items():
             assert db.scalar(select(func.count()).select_from(model).where(
                 model.user_id == owner_id
-            )) > 0
+            )) == count
         assert db.get(AIUsageCounter, keys[0]).call_count == 2
