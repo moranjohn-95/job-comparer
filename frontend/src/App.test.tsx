@@ -49,6 +49,65 @@ afterEach(() => {
 
 let mockedDialog = false;
 
+test("opens the privacy policy directly and returns home without changing data", async () => {
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    expect(init?.method ?? "GET").toBe("GET");
+    return Promise.resolve(savedDraftResponse(String(input)));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.replaceState(null, "", "/privacy");
+  await renderSignedOutApp();
+
+  expect(screen.getByRole("heading", { level: 1, name: "Privacy Policy" })).toBeVisible();
+  expect(screen.getByText("Draft for owner review")).toBeVisible();
+  expect(screen.getByText(/operated by John Moran, an individual based in Ireland/)).toBeVisible();
+  expect(screen.getByRole("link", { name: "privacy@jobcomparer.com" }))
+    .toHaveAttribute("href", "mailto:privacy@jobcomparer.com");
+  for (const name of ["Information we handle", "AI comparisons", "Retention and deletion",
+    "Your rights", "Controller and contact"]) {
+    expect(screen.getByRole("heading", { level: 2, name })).toBeVisible();
+  }
+  expect(screen.getByText(/saved CV text and the selected job description are sent to OpenAI/)).toBeVisible();
+  expect(screen.getByText(/Replacing or deleting it does not remove excerpts from earlier comparisons/)).toBeVisible();
+  const footer = within(screen.getByRole("navigation", { name: "Footer" }));
+  expect(footer.getByRole("link", { name: "Privacy" })).toHaveAttribute("aria-current", "page");
+  const returnLink = screen.getByRole("link", { name: "Back to home" });
+  expect(returnLink).toHaveAttribute("href", "/");
+  fireEvent.click(returnLink);
+
+  expect(window.location.pathname).toBe("/");
+  expect(screen.queryByRole("heading", { name: "Privacy Policy" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Job description")).toBeVisible();
+  expect(footer.getByRole("link", { name: "Privacy" })).not.toHaveAttribute("aria-current");
+});
+
+test("preserves the session and unsaved drafts through privacy navigation and browser Back", async () => {
+  const { writes, fetchMock } = mockEmptyDashboard();
+  render(<App />);
+  const title = await screen.findByLabelText("Job title");
+  fireEvent.change(title, { target: { value: "Unsubmitted role" } });
+  fireEvent.change(screen.getByLabelText("Job description"), { target: { value: "Unsubmitted description" } });
+  fireEvent.click(screen.getByRole("tab", { name: "Paste text" }));
+  fireEvent.change(screen.getByLabelText("Paste your CV text"), { target: { value: "Unsubmitted CV" } });
+
+  fireEvent.click(screen.getByRole("link", { name: "Privacy" }));
+  expect(screen.getByRole("heading", { name: "Privacy Policy" })).toBeVisible();
+  expect(screen.getByRole("link", { name: "Back to dashboard" })).toHaveAttribute("href", "/");
+  window.history.back();
+  await waitFor(() => expect(screen.getByRole("heading", { name: "Start a comparison" })).toBeVisible());
+
+  fireEvent.click(screen.getByRole("link", { name: "Privacy" }));
+  fireEvent.click(screen.getByRole("link", { name: "Back to dashboard" }));
+  expect(screen.getByText("ada@example.com")).toBeVisible();
+  expect(screen.getByLabelText("Job title")).toHaveValue("Unsubmitted role");
+  expect(screen.getByLabelText("Job description")).toHaveValue("Unsubmitted description");
+  expect(screen.getByLabelText("Paste your CV text")).toHaveValue("Unsubmitted CV");
+  expect(writes).toEqual([]);
+  for (const [, init] of fetchMock.mock.calls) {
+    expect(init?.method ?? "GET").toBe("GET");
+  }
+});
+
 // jsdom has no native dialog implementation. Browser checks cover its focus
 // containment; these shims exercise our opening, cancellation and restoration.
 function enableDialogMock() {
