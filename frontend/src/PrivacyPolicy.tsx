@@ -200,7 +200,6 @@ export function PrivacyPolicy() {
     </section>
     <section aria-labelledby="privacy-controller">
       <h2 id="privacy-controller">Contact and data controller</h2>
-      <p>Job Comparer is operated by John Moran, based in Ireland.</p>
       <p>
         The operator is the data controller, responsible for how your personal
         information is used. For privacy questions or requests about your data,

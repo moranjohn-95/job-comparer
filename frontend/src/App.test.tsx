@@ -62,8 +62,7 @@ test("opens the privacy policy directly and returns home without changing data",
   expect(screen.queryByText("Draft for owner review")).not.toBeInTheDocument();
   const policy = screen.getByRole("article", { name: "Privacy notice" });
   const contact = within(policy).getByRole("region", { name: "Contact and data controller" });
-  expect(within(contact).getByText("Job Comparer is operated by John Moran, based in Ireland.")).toBeVisible();
-  expect(policy.textContent?.match(/John Moran/g)).toHaveLength(1);
+  expect(policy).not.toHaveTextContent("John Moran");
   expect(within(policy).getAllByRole("heading", { level: 2 }).at(-1))
     .toHaveTextContent("Contact and data controller");
   expect(within(contact).getByRole("link", { name: "privacy@jobcomparer.com" }))
