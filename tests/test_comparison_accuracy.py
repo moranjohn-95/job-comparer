@@ -254,7 +254,9 @@ def test_accuracy_instructions_and_synthetic_response_contract(
         "job_excerpts": job_catalog,
     }
     assert result.model_dump(exclude={"interpretation"}) == expected
-    assert "does not establish" in result.interpretation
+    assert "does not necessarily mean you lack the skill" in (
+        result.interpretation
+    )
     assert payloads[0]["text"]["format"]["strict"] is True
 
 

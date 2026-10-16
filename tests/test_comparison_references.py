@@ -237,9 +237,24 @@ def test_unassessed_requirement_is_not_manufactured_as_gap(
     assert "may omit criteria" in result.interpretation
 
 
-def test_public_list_limit_marks_unshown_requirements_incomplete(
+@pytest.mark.parametrize("count", [11, 20])
+@pytest.mark.parametrize(
+    "status,category",
+    [
+        ("matched", "matched_requirements"),
+        ("not_found_in_cv", "possible_gaps"),
+        ("unassessed", "needs_review"),
+    ],
+)
+def test_every_validated_requirement_and_its_evidence_is_returned(
     monkeypatch: pytest.MonkeyPatch,
+    count: int,
+    status: str,
+    category: str,
 ) -> None:
+    cv = "Synthetic CV evidence."
+    job = "Synthetic criteria required."
+    reason = "The required scope is unclear." if status == "unassessed" else ""
     output = {
         "inventory_complete": True,
         "requirements": [
@@ -248,28 +263,49 @@ def test_public_list_limit_marks_unshown_requirements_incomplete(
                 "requirement": f"Criterion {index}",
                 "job_evidence_id": "job_0001",
             }
-            for index in range(1, 12)
+            for index in range(1, count + 1)
         ],
         "assessments": [
             {
                 "requirement_id": f"req_{index:04d}",
-                "status": "not_found_in_cv", "cv_evidence_id": "",
-                "reason": "",
+                "status": status,
+                "cv_evidence_id": (
+                    "" if status == "not_found_in_cv" else "cv_0001"
+                ),
+                "reason": reason,
             }
-            for index in range(1, 12)
+            for index in range(1, count + 1)
         ],
     }
-    mock_provider(monkeypatch, output)
+    calls = mock_provider(monkeypatch, output)
 
     result = compare(
-        "Synthetic CV.", "Synthetic criteria required.",
-        ProviderSettings("test-key", "gpt-4o-mini"),
+        cv, job, ProviderSettings("test-key", "gpt-4o-mini"),
     )
 
-    assert len(result.possible_gaps) == 10
-    assert "comparison is incomplete" in result.interpretation
-    assert "1 additional assessed requirement" in result.interpretation
-    assert "Criterion 11" not in result.interpretation
+    expected = []
+    for index in range(1, count + 1):
+        item = {"requirement": f"Criterion {index}", "job_evidence": job}
+        if status == "not_found_in_cv":
+            item["status"] = status
+        else:
+            item["cv_evidence"] = cv
+        if status == "unassessed":
+            item["reason"] = reason
+        expected.append(item)
+    for field in ("matched_requirements", "possible_gaps", "needs_review"):
+        assert [item.model_dump() for item in getattr(result, field)] == (
+            expected if field == category else []
+        )
+    assert len(calls) == 1
+    assert ("comparison is incomplete" in result.interpretation) == (
+        status == "unassessed"
+    )
+    assert "public display limit" not in result.interpretation
+    assert "additional assessed requirement" not in result.interpretation
+    assert "does not necessarily mean you lack the skill" in (
+        result.interpretation
+    )
 
 
 @pytest.mark.parametrize("start,end", [(1190, 2077), (1430, 2045)])

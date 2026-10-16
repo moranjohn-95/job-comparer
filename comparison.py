@@ -236,14 +236,14 @@ class NeedsReview(BaseModel):
 class ComparisonResult(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    matched_requirements: list[MatchedRequirement] = Field(max_length=10)
-    possible_gaps: list[PossibleGap] = Field(max_length=10)
+    matched_requirements: list[MatchedRequirement] = Field(max_length=20)
+    possible_gaps: list[PossibleGap] = Field(max_length=20)
     needs_review: list[NeedsReview] = Field(
         default_factory=list, max_length=20,
     )
     interpretation: str = (
-        "A possible gap means evidence was not found in the saved CV; "
-        "it does not establish that the person lacks the skill."
+        "A possible gap means no supporting evidence was found in your "
+        "saved CV. It does not necessarily mean you lack the skill."
     )
 
 
@@ -785,26 +785,16 @@ def compare(
             missing_count=len(set(requirements) - assessed),
         )
 
-    overflow = [
-        item["requirement"] for item in matches[10:] + gaps[10:]
-    ]
-    matches = matches[:10]
-    gaps = gaps[:10]
     notice = []
     if (
         needs_review or not requirements
-        or not referenced.inventory_complete or overflow
+        or not referenced.inventory_complete
     ):
         notice.append("This comparison is incomplete.")
     if not referenced.inventory_complete:
         notice.append(
             "The requirement inventory may omit criteria from the job "
             "description; omitted criteria have not been assessed."
-        )
-    if overflow:
-        notice.append(
-            f"{len(overflow)} additional assessed requirements are not "
-            "shown because the public display limit was reached."
         )
     if not requirements:
         notice.append(

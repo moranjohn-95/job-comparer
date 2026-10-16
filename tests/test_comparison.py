@@ -229,7 +229,7 @@ def test_comparison_returns_grounded_result_and_sends_only_owned_text(
     )
     assert result["possible_gaps"] == PROVIDER_RESULT["possible_gaps"]
     assert (
-        "does not establish that the person lacks the skill"
+        "does not necessarily mean you lack the skill"
         in result["interpretation"]
     )
     assert "score" not in result
