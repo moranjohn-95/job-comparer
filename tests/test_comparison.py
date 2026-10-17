@@ -887,7 +887,9 @@ def test_successful_result_persists_as_private_history(
     }
     legacy_result = comparison.json()
     legacy_result.pop("needs_review")
-    legacy_result["interpretation"] = "Original historical interpretation."
+    legacy_result["interpretation"] = (
+        "This comparison is incomplete. Original historical interpretation."
+    )
     with Session(get_engine()) as session:
         entry = session.query(ComparisonHistory).filter_by(job_id=job_id).one()
         assert entry.id == comparison_id
@@ -922,7 +924,7 @@ def test_successful_result_persists_as_private_history(
         assert entry.result == legacy_result
 
 
-def test_qualification_mismatch_returns_and_saves_incomplete_result(
+def test_qualification_mismatch_returns_and_saves_review_result(
     client: TestClient,
     create_user: Callable[[], dict[str, str]],
     monkeypatch: pytest.MonkeyPatch,
@@ -972,7 +974,11 @@ def test_qualification_mismatch_returns_and_saves_incomplete_result(
         item["requirement"] for item in result["matched_requirements"]
     ] == ["Python experience"]
     assert result["possible_gaps"] == []
-    assert "comparison is incomplete" in result["interpretation"]
+    assert "incomplete" not in result["interpretation"]
+    assert "All identified requirements are included" in (
+        result["interpretation"]
+    )
+    assert "need human judgement" in result["interpretation"]
     assert result["needs_review"] == [{
         "requirement": "Engineering degree",
         "reason": (

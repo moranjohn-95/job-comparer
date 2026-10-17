@@ -202,11 +202,13 @@ def test_inventory_is_unique_and_fully_assessed(
     assert f'"category": "{category}"' in caplog.text
 
 
+@pytest.mark.parametrize("inventory_complete", [False, True])
 def test_unassessed_requirement_is_not_manufactured_as_gap(
     monkeypatch: pytest.MonkeyPatch,
+    inventory_complete: bool,
 ) -> None:
     output = {
-        "inventory_complete": False,
+        "inventory_complete": inventory_complete,
         "requirements": [{
             "id": "req_0001", "requirement": "Linux deployment",
             "job_evidence_id": "job_0001",
@@ -226,7 +228,9 @@ def test_unassessed_requirement_is_not_manufactured_as_gap(
 
     assert result.matched_requirements == []
     assert result.possible_gaps == []
-    assert "comparison is incomplete" in result.interpretation
+    assert ("comparison is incomplete" in result.interpretation) == (
+        not inventory_complete
+    )
     assert [item.model_dump() for item in result.needs_review] == [{
         "requirement": "Linux deployment",
         "reason": "The required deployment scope is unclear.",
@@ -234,7 +238,64 @@ def test_unassessed_requirement_is_not_manufactured_as_gap(
         "cv_evidence": "Deployed on Ubuntu.",
     }]
     assert "Linux deployment" not in result.interpretation
-    assert "may omit criteria" in result.interpretation
+    assert ("may omit criteria" in result.interpretation) == (
+        not inventory_complete
+    )
+    assert ("not a complete assessment" in result.interpretation) == (
+        not inventory_complete
+    )
+    assert (
+        "All identified requirements are included in this comparison."
+        in result.interpretation
+    ) == inventory_complete
+    assert (
+        "Some requirements need human judgement; check the evidence "
+        "and review notes."
+    ) in result.interpretation
+
+
+@pytest.mark.parametrize(
+    "inventory_complete,has_requirement",
+    [(False, True), (False, False), (True, False)],
+)
+def test_genuinely_incomplete_result_warns_without_needs_review(
+    monkeypatch: pytest.MonkeyPatch,
+    inventory_complete: bool,
+    has_requirement: bool,
+) -> None:
+    output = {
+        "inventory_complete": inventory_complete,
+        "requirements": [{
+            "id": "req_0001", "requirement": "Linux deployment",
+            "job_evidence_id": "job_0001",
+        }] if has_requirement else [],
+        "assessments": [{
+            "requirement_id": "req_0001", "status": "matched",
+            "cv_evidence_id": "cv_0001", "reason": "",
+        }] if has_requirement else [],
+    }
+    mock_provider(monkeypatch, output)
+
+    result = compare(
+        "Deployed on Linux.", "Linux deployment required.",
+        ProviderSettings("test-key", "gpt-4o-mini"),
+    )
+
+    assert result.needs_review == []
+    assert result.possible_gaps == []
+    assert bool(result.matched_requirements) == has_requirement
+    assert "comparison is incomplete" in result.interpretation
+    assert ("may omit criteria" in result.interpretation) == (
+        not inventory_complete
+    )
+    assert ("No requirements were identified" in result.interpretation) == (
+        not has_requirement
+    )
+    assert "All identified requirements" not in result.interpretation
+    assert "human judgement" not in result.interpretation
+    assert "does not necessarily mean you lack the skill" in (
+        result.interpretation
+    )
 
 
 @pytest.mark.parametrize("count", [11, 20])
@@ -298,7 +359,9 @@ def test_every_validated_requirement_and_its_evidence_is_returned(
             expected if field == category else []
         )
     assert len(calls) == 1
-    assert ("comparison is incomplete" in result.interpretation) == (
+    assert "comparison is incomplete" not in result.interpretation
+    assert "not a complete assessment" not in result.interpretation
+    assert ("human judgement" in result.interpretation) == (
         status == "unassessed"
     )
     assert "public display limit" not in result.interpretation

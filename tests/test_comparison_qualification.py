@@ -111,7 +111,9 @@ def test_provider_match_with_wrong_credential_type_is_withheld(
 
     assert result.matched_requirements == []
     assert result.possible_gaps == []
-    assert "comparison is incomplete" in result.interpretation
+    assert "incomplete" not in result.interpretation
+    assert "All identified requirements are included" in result.interpretation
+    assert "need human judgement" in result.interpretation
     assert len(result.needs_review) == 1
     review = result.needs_review[0]
     assert review.requirement == requirement
@@ -119,4 +121,4 @@ def test_provider_match_with_wrong_credential_type_is_withheld(
     assert review.job_evidence == job
     assert "Other CV evidence has not been ruled out" in review.reason
     assert requirement not in result.interpretation
-    assert "not a complete assessment" in result.interpretation
+    assert "not a complete assessment" not in result.interpretation

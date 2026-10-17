@@ -786,10 +786,10 @@ def compare(
         )
 
     notice = []
-    if (
-        needs_review or not requirements
-        or not referenced.inventory_complete
-    ):
+    inventory_incomplete = (
+        not requirements or not referenced.inventory_complete
+    )
+    if inventory_incomplete:
         notice.append("This comparison is incomplete.")
     if not referenced.inventory_complete:
         notice.append(
@@ -801,7 +801,16 @@ def compare(
             "No requirements were identified; the job description "
             "has not been completely assessed."
         )
-    if notice and not matches and not gaps:
+    if needs_review:
+        if not inventory_incomplete:
+            notice.append(
+                "All identified requirements are included in this comparison."
+            )
+        notice.append(
+            "Some requirements need human judgement; check the evidence "
+            "and review notes."
+        )
+    if inventory_incomplete and not matches and not gaps:
         notice.append(
             "No validated matches or possible gaps are shown; this is "
             "not a complete assessment."
