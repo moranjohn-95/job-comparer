@@ -1,6 +1,12 @@
-# Job Comparer API
+# Job Comparer
 
-A FastAPI backend with PostgreSQL accounts, one saved CV and private saved jobs per user, AI comparison history, a health check, and Alembic migrations. CV text can be entered directly or extracted from a PDF or DOCX upload.
+Job Comparer is a full-stack application that helps users compare their CV with job descriptions. Users can upload or paste a CV, save job details, and generate AI-assisted comparisons that highlight matching requirements and possible gaps, with supporting excerpts from the supplied text. Saved comparisons can be revisited in a private account.
+
+**Project status:** The desktop MVP is complete and live. Users can create an account, verify their email, save a CV and job descriptions, and run and review comparisons. This release focuses on the core desktop experience, with further improvements planned.
+
+Comparison results are intended as guidance. A possible gap means supporting evidence was not found in the CV; it does not necessarily mean the user lacks that skill.
+
+**Live site:** [https://jobcomparer.com](https://jobcomparer.com)
 
 ## Table of Contents
 
